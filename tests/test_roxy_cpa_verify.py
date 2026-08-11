@@ -123,14 +123,14 @@ class RoxyCodexOauthCpaVerifyTests(unittest.TestCase):
 class RoxyRegistrationOneShotCpaVerifyTests(unittest.TestCase):
     """R3b：run_roxy_registration_and_codex one-shot 的 CPA 提交处应调用校验并按结果分支。"""
 
-    def _run_one_shot(self, verify_result):
+    def _run_one_shot(self, verify_result, submit_kwargs=None, return_mocks=False):
         callback_url = "http://localhost:1455/auth/callback?code=code123&state=state123"
         client = Mock()
         client.open_profile.return_value = SimpleNamespace(profile_id="p1", raw={})
         driver = Mock()
         driver.current_url = "https://chatgpt.com/chat"
 
-        stack, mocks = _patched([
+        patchers = [
             {"name": "client", "enter": patch.object, "kwargs": {
                 "target": roxy_registration, "attribute": "RoxyBrowserClient", "return_value": client}},
             {"name": "build", "enter": patch.object, "kwargs": {
@@ -191,7 +191,13 @@ class RoxyRegistrationOneShotCpaVerifyTests(unittest.TestCase):
                 "target": "core.codex_oauth._save_cpa_local_record", "return_value": "/tmp/receipt.json"}},
             {"name": "verify", "enter": patch, "kwargs": {
                 "target": "core.codex_oauth._verify_cpa_auth_landed", "return_value": verify_result}},
-        ])
+        ]
+        if submit_kwargs is not None:
+            for p in patchers:
+                if p["name"] == "submit":
+                    p["kwargs"] = {"target": "core.codex_oauth._submit_cpa_callback", **submit_kwargs}
+                    break
+        stack, mocks = _patched(patchers)
         try:
             result = roxy_registration.run_roxy_registration_and_codex(
                 "user@example.com", "Test User", "2000-01-01", proxy=None, otp_code=None, batch_dir=None,
@@ -199,7 +205,10 @@ class RoxyRegistrationOneShotCpaVerifyTests(unittest.TestCase):
         finally:
             stack.close()
 
-        mocks["verify"].assert_called_once_with("user@example.com")
+        if not (submit_kwargs is not None and "side_effect" in submit_kwargs):
+            mocks["verify"].assert_called_once_with("user@example.com")
+        if return_mocks:
+            return result, mocks
         return result
 
     def test_one_shot_cpa_not_landed_marks_failed(self):
@@ -217,6 +226,38 @@ class RoxyRegistrationOneShotCpaVerifyTests(unittest.TestCase):
         self.assertEqual(codex.get("status"), "success")
         self.assertIs(codex.get("ok"), True)
         self.assertIs(result.get("success"), True)
+
+    def test_one_shot_cpa_submit_failure_still_saves_account(self):
+        """CPA callback 提交抛异常（如 409 重试耗尽）→ 不中断，账号仍保存，codex failed。"""
+        result, mocks = self._run_one_shot(
+            verify_result=True,
+            submit_kwargs={"side_effect": RuntimeError("409 Timeout waiting for OAuth callback")},
+            return_mocks=True,
+        )
+        codex = result.get("codex") or {}
+        self.assertEqual(codex.get("status"), "failed")
+        self.assertIs(codex.get("ok"), False)
+        self.assertIn("CPA callback 提交失败", codex.get("message") or "")
+        self.assertIn("409 Timeout waiting for OAuth callback", codex.get("message") or "")
+        self.assertIs(result.get("success"), False)
+        self.assertIn("Codex 未完成", result.get("error") or "")
+        # 注册成果不丢：save_account_data 一定执行且 extra.codex.status=failed
+        mocks["save"].assert_called_once()
+        save_extra = mocks["save"].call_args.kwargs.get("extra") or {}
+        self.assertEqual((save_extra.get("codex") or {}).get("status"), "failed")
+
+    def test_one_shot_cpa_submitted_but_not_landed_still_saves_account(self):
+        """CPA 提交成功但 CPA 侧未落盘 → 不中断，账号仍保存，codex failed。"""
+        result, mocks = self._run_one_shot(verify_result=False, return_mocks=True)
+        codex = result.get("codex") or {}
+        self.assertEqual(codex.get("status"), "failed")
+        self.assertIs(codex.get("ok"), False)
+        self.assertIn("未落盘可用 auth 文件", codex.get("message") or "")
+        self.assertIs(result.get("success"), False)
+        # 注册成果不丢：save_account_data 一定执行
+        mocks["save"].assert_called_once()
+        save_extra = mocks["save"].call_args.kwargs.get("extra") or {}
+        self.assertEqual((save_extra.get("codex") or {}).get("status"), "failed")
 
     def test_one_shot_cookie_fallback_supplies_access_token(self):
         """页面 session 拿不到 AT 时，cookie 协议兜底成功 → access_token 写入结果。"""

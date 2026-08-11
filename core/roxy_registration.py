@@ -2390,38 +2390,50 @@ def run_roxy_registration_and_codex(
         code = proto._extract_code(callback_url, state)
         logger.info("[Roxy注册][Codex] 已捕获 callback code：%s...", code[:24])
 
-        # 提交 CPA
-        submit_payload = proto._submit_cpa_callback(callback_url)
-        path = proto._save_cpa_local_record(
-            email=email,
-            callback_url=callback_url,
-            auth_url=auth_url,
-            state=state,
-            submit_payload=submit_payload,
-        )
-        msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
-        if not proto._verify_cpa_auth_landed(email):
+        # 提交 CPA（失败不中断，保留注册成果落库）
+        try:
+            submit_payload = proto._submit_cpa_callback(callback_url)
+            path = proto._save_cpa_local_record(
+                email=email,
+                callback_url=callback_url,
+                auth_url=auth_url,
+                state=state,
+                submit_payload=submit_payload,
+            )
+            msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
+            if not proto._verify_cpa_auth_landed(email):
+                logger.warning(
+                    "[Roxy注册][Codex] callback 已提交但 CPA 侧未检测到可用 auth 文件：%s，本地记录=%s",
+                    email, path or "disabled",
+                )
+                codex_result = proto._codex_result(
+                    status="failed",
+                    ok=False,
+                    email=email,
+                    file_path=str(path) if path else None,
+                    callback_url=callback_url,
+                    message=f"一段式: CPA callback 提交成功但未落盘可用 auth 文件：{msg}",
+                )
+            else:
+                logger.info("[Roxy注册][Codex] 成功：%s，%s，CPA 已落盘，本地记录=%s", email, msg, path or "disabled")
+                codex_result = proto._codex_result(
+                    status="success",
+                    ok=True,
+                    email=email,
+                    file_path=str(path) if path else None,
+                    callback_url=callback_url,
+                    message=f"一段式: {msg}",
+                )
+        except Exception as exc:
             logger.warning(
-                "[Roxy注册][Codex] callback 已提交但 CPA 侧未检测到可用 auth 文件：%s，本地记录=%s",
-                email, path or "disabled",
+                "[Roxy注册][Codex] CPA callback 提交失败(不中断,保留注册成果): %s: %s", email, exc
             )
             codex_result = proto._codex_result(
                 status="failed",
                 ok=False,
                 email=email,
-                file_path=str(path) if path else None,
                 callback_url=callback_url,
-                message=f"一段式: CPA callback 提交成功但未落盘可用 auth 文件：{msg}",
-            )
-        else:
-            logger.info("[Roxy注册][Codex] 成功：%s，%s，CPA 已落盘，本地记录=%s", email, msg, path or "disabled")
-            codex_result = proto._codex_result(
-                status="success",
-                ok=True,
-                email=email,
-                file_path=str(path) if path else None,
-                callback_url=callback_url,
-                message=f"一段式: {msg}",
+                message=f"一段式: CPA callback 提交失败: {exc}",
             )
 
         # 尝试拿 chatgpt session 作为 access_token(备用;不阻塞)
