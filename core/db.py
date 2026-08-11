@@ -1132,6 +1132,85 @@ def _filtered_decorated_accounts(archived: str | bool | None = False, plan_filte
     return sorted(decorated, key=lambda x: int(x.get("id") or 0), reverse=True)
 
 
+# 状态/来源自动分类标签（前端只传 key，规则集中在 db.py 单一来源）。
+ACCOUNT_TAG_KEYS = frozenset({
+    "dead", "outlook", "icloud", "no_token", "plus", "free",
+    "token_expired", "codex_success", "codex_failed", "codex_pending",
+    "live_failed", "live_pending",
+})
+
+_OUTLOOK_DOMAINS = ("@outlook.com", "@hotmail.com", "@live.com")
+_ICLOUD_DOMAINS = ("@icloud.com", "@me.com", "@mac.com")
+
+
+def _account_tag_source(row: dict) -> str:
+    """账号来源：email_source 字段优先，兜底按邮箱域名判断。"""
+    source = str(row.get("email_source") or "").strip().lower()
+    if source:
+        return source
+    email = str(row.get("email") or "").strip().lower()
+    if email.endswith(_OUTLOOK_DOMAINS):
+        return "outlook"
+    if email.endswith(_ICLOUD_DOMAINS):
+        return "icloud_hme"
+    return ""
+
+
+def _account_matches_tag(row: dict, tag: str) -> bool:
+    """单个账号（已装饰行）是否命中某个状态/来源标签。未知标签返回 False。"""
+    tag = str(tag or "").strip()
+    if tag == "dead":
+        return row.get("live_check_status") == "deactivated"
+    if tag == "outlook":
+        return _account_tag_source(row) == "outlook"
+    if tag == "icloud":
+        return _account_tag_source(row) == "icloud_hme"
+    if tag == "no_token":
+        return not str(row.get("access_token") or "").strip()
+    if tag == "plus":
+        return _account_matches_plan_filter(row, "plus")
+    if tag == "free":
+        return _account_matches_plan_filter(row, "free")
+    if tag == "token_expired":
+        return bool(row.get("token_expired"))
+    if tag == "codex_success":
+        return row.get("codex_status") == "success"
+    if tag == "codex_failed":
+        return row.get("codex_status") == "failed"
+    if tag == "codex_pending":
+        return row.get("codex_status") not in ("success", "failed", "deactivated")
+    if tag == "live_failed":
+        return row.get("live_check_status") == "failed"
+    if tag == "live_pending":
+        status = str(row.get("live_check_status") or "")
+        return status in ("", "-")
+    return False
+
+
+def match_account_ids_by_tags(tags: list[str] | None) -> list[int]:
+    """按状态/来源标签返回命中任一标签的账号 id（OR 并集，全库未归档）。
+
+    标签规则集中在 db.py（前端只传 key）。未知标签 key 会被忽略；
+    tags 为空或全部未知时返回空列表。
+    """
+    requested = [str(t).strip() for t in (tags or [])]
+    requested = [t for t in requested if t in ACCOUNT_TAG_KEYS]
+    if not requested:
+        return []
+    with _LOCK:
+        rows = [r for r in _load_accounts() if not bool(r.get("archived"))]
+        matched_ids: list[int] = []
+        seen: set[int] = set()
+        for row in rows:
+            decorated = _decorate_account(row)
+            if any(_account_matches_tag(decorated, tag) for tag in requested):
+                row_id = int(row.get("id") or 0)
+                if row_id and row_id not in seen:
+                    seen.add(row_id)
+                    matched_ids.append(row_id)
+        return matched_ids
+
+
 def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archived: str | bool | None = False, plan_filter: str | None = None, q: str | None = None) -> dict:
     """返回不含 Token/邮箱密码的套餐查询轻量状态快照。"""
     fields = (
