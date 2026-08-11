@@ -2012,8 +2012,15 @@ def _click_if_enabled_submit(driver) -> bool:
         return False
 
 
-def _read_chatgpt_session_once(driver) -> dict | None:
-    """当前页面必须在 chatgpt.com；读取 /api/auth/session，拿不到 token 返回 None。"""
+def _read_chatgpt_session_detailed(driver) -> tuple[dict | None, str]:
+    """当前页面必须在 chatgpt.com；读取 /api/auth/session。
+
+    Returns (data, reason):
+      - reason "ok": 拿到 accessToken，data 为完整 session
+      - reason "warning_banner": 响应含 WARNING_BANNER（新账号安全提示，无 accessToken）
+      - reason "no_token": 有响应但无 accessToken 也无 WARNING_BANNER
+      - reason "error": 读取/解析异常
+    """
     script = r"""
     const done = arguments[0];
     fetch('/api/auth/session', {credentials: 'include'})
@@ -2021,14 +2028,27 @@ def _read_chatgpt_session_once(driver) -> dict | None:
       .then(j => done({ok: true, data: j}))
       .catch(e => done({ok: false, error: String(e)}));
     """
-    result = driver.execute_async_script(script)
+    try:
+        result = driver.execute_async_script(script)
+    except Exception as exc:
+        return None, "error"
     if result and result.get("ok"):
         data = result.get("data") or {}
         if data.get("accessToken"):
             logger.info("%s /api/auth/session 已返回 accessToken", _log_prefix(driver))
-            return data
+            return data, "ok"
+        if isinstance(data, dict) and "WARNING_BANNER" in data:
+            logger.info("%s /api/auth/session 返回 WARNING_BANNER（无 accessToken），keys=%s", _log_prefix(driver), list(data.keys()))
+            return data, "warning_banner"
         logger.info("%s 等待 ChatGPT session 写入 accessToken，当前响应 keys=%s", _log_prefix(driver), list(data.keys()))
-    return None
+        return None, "no_token"
+    return None, "error"
+
+
+def _read_chatgpt_session_once(driver) -> dict | None:
+    """当前页面必须在 chatgpt.com；读取 /api/auth/session，拿不到 token 返回 None。"""
+    data, reason = _read_chatgpt_session_detailed(driver)
+    return data if reason == "ok" else None
 
 
 def _switch_to_chatgpt_window_if_any(driver) -> bool:
@@ -2057,17 +2077,30 @@ def _switch_to_chatgpt_window_if_any(driver) -> bool:
     return False
 
 
-def _fetch_chatgpt_session(driver, timeout: int = 90, auto_jump_wait: int = 15) -> dict:
+def _fetch_chatgpt_session(
+    driver,
+    timeout: int = 90,
+    auto_jump_wait: int = 15,
+    banner_refresh_attempts: int = 3,
+    banner_refresh_delay: float = 4.0,
+) -> dict:
     """等待页面完成跳转并从 ChatGPT 页面内读取登录 session/accessToken。
 
     旧逻辑会在 auth.openai.com 上一直等到总超时，Cloak/部分 Chromium 场景下
     实际账号已创建成功但当前句柄 URL 没及时更新，导致白等 120 秒。现在只给
     自动跳转 `auto_jump_wait` 秒；超过后立即主动打开 chatgpt.com 读 session。
+
+    新账号 `/api/auth/session` 常见返回 `{"WARNING_BANNER": ...}`（无 accessToken），
+    此时不再原地空等：主动跳 `chatgpt.com/chat`（失败则刷新 `chatgpt.com/`）
+    重建 session，最多 `banner_refresh_attempts` 次，每次间隔 `banner_refresh_delay` 秒。
     """
     end = time.time() + timeout
     auto_jump_end = time.time() + max(3, int(auto_jump_wait or 15))
     last_data = None
     forced_chatgpt_open = False
+    banner_refreshes = 0
+    max_banner_refreshes = max(0, int(banner_refresh_attempts or 0))
+    banner_delay = max(1.0, float(banner_refresh_delay or 4.0))
 
     while time.time() < end:
         try:
@@ -2093,15 +2126,103 @@ def _fetch_chatgpt_session(driver, timeout: int = 90, auto_jump_wait: int = 15) 
 
         if 'chatgpt.com' in current:
             try:
-                data = _read_chatgpt_session_once(driver)
-                if data:
+                data, reason = _read_chatgpt_session_detailed(driver)
+                if reason == "ok":
                     return data
-                last_data = "session 暂无 accessToken"
+                if reason == "warning_banner":
+                    # WARNING_BANNER：新账号安全提示，无 accessToken。
+                    # 主动跳 /chat 或刷新首页重建 session，最多 N 次。
+                    if banner_refreshes < max_banner_refreshes:
+                        banner_refreshes += 1
+                        logger.info(
+                            "%s 检测到 WARNING_BANNER（无 accessToken），主动跳 /chat 重建 session（%s/%s）",
+                            _log_prefix(driver), banner_refreshes, max_banner_refreshes,
+                        )
+                        try:
+                            _safe_get(driver, "https://chatgpt.com/chat", timeout=35, attempts=2, accept_hosts=("chatgpt.com",))
+                        except Exception as exc:
+                            logger.info("%s 跳 /chat 失败，改刷新首页：%s", _log_prefix(driver), exc)
+                            try:
+                                _safe_get(driver, "https://chatgpt.com/", timeout=35, attempts=2, accept_hosts=("chatgpt.com",))
+                            except Exception as exc2:
+                                last_data = f"{type(exc2).__name__}: {exc2}"
+                        time.sleep(banner_delay)
+                        continue
+                    last_data = "WARNING_BANNER（无 accessToken），已多次主动刷新仍无 session"
+                else:
+                    last_data = "session 暂无 accessToken"
             except Exception as exc:
                 last_data = f"{type(exc).__name__}: {exc}"
         time.sleep(2)
 
     raise RuntimeError(f"等待 /api/auth/session accessToken 超时，最后响应: {str(last_data)[:800]}")
+
+
+def _collect_browser_cookies(driver) -> dict[str, str]:
+    """从 driver 收集 chatgpt/auth.openai 相关 cookie（尽力而为）。
+
+    Selenium WebDriver 暴露 get_cookies()；Cloak 适配层暴露 context（Playwright），
+    通过 context.cookies() 读取。只保留 openai.com / chatgpt.com 域相关 cookie，
+    避免把无关站点 cookie 带进协议请求。
+    """
+    raw: list[dict] = []
+    try:
+        getter = getattr(driver, "get_cookies", None)
+        if callable(getter):
+            raw = list(getter() or [])
+    except Exception:
+        raw = []
+    if not raw:
+        try:
+            context = getattr(driver, "context", None)
+            ctx_cookies = getattr(context, "cookies", None)
+            if callable(ctx_cookies):
+                raw = list(ctx_cookies() or [])
+        except Exception:
+            raw = []
+    out: dict[str, str] = {}
+    for c in raw or []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        value = str(c.get("value") or "")
+        domain = str(c.get("domain") or "")
+        if not name or not value:
+            continue
+        if any(d in domain for d in ("openai.com", "chatgpt.com")):
+            out[name] = value
+    return out
+
+
+def _fetch_chatgpt_session_via_cookies(driver) -> dict | None:
+    """协议兜底：用浏览器已登录 cookie 直接请求 /api/auth/session。
+
+    页面内 fetch 一直拿不到 accessToken（如 WARNING_BANNER 持续存在）时，从浏览器
+    导出 chatgpt/auth.openai 相关 cookie，走 curl_cffi 协议层（复用
+    core.codex_agent.get_session_from_cookies）直接拉 session。失败返回 None，不阻塞。
+
+    Note: 完整协议兜底（BrowserSession + follow_oauth_callback + fetch_session）需要
+    构造 OAuth continue_url，Roxy/Cloak 流程里没有现成 URL；这里退化为 cookie 直连，
+    不引入新依赖，失败时 AT 仍为空并写日志说明原因。
+    """
+    try:
+        cookies = _collect_browser_cookies(driver)
+    except Exception as exc:
+        logger.info("[Roxy注册] cookie 收集失败(不阻塞): %s", exc)
+        return None
+    if not cookies:
+        logger.info("[Roxy注册] 浏览器无可用 cookie，跳过协议兜底")
+        return None
+    try:
+        from core.codex_agent import get_session_from_cookies
+        data = get_session_from_cookies(cookies)
+        if data and data.get("accessToken"):
+            logger.info("[Roxy注册] cookie 协议兜底拿到 accessToken，user_id=%s", (data.get("user") or {}).get("id"))
+            return data
+        logger.info("[Roxy注册] cookie 协议兜底响应无 accessToken: %s", str(data)[:160])
+    except Exception as exc:
+        logger.info("[Roxy注册] cookie 协议兜底失败(不阻塞): %s", exc)
+    return None
 
 
 def _check_manual_stop() -> None:
@@ -2278,14 +2399,30 @@ def run_roxy_registration_and_codex(
             state=state,
             submit_payload=submit_payload,
         )
-        codex_result = proto._codex_result(
-            status="success",
-            ok=True,
-            email=email,
-            file_path=str(path) if path else None,
-            callback_url=callback_url,
-            message=f"一段式: {submit_payload.get('message') or submit_payload.get('status_message') or 'CPA callback submitted'}",
-        )
+        msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
+        if not proto._verify_cpa_auth_landed(email):
+            logger.warning(
+                "[Roxy注册][Codex] callback 已提交但 CPA 侧未检测到可用 auth 文件：%s，本地记录=%s",
+                email, path or "disabled",
+            )
+            codex_result = proto._codex_result(
+                status="failed",
+                ok=False,
+                email=email,
+                file_path=str(path) if path else None,
+                callback_url=callback_url,
+                message=f"一段式: CPA callback 提交成功但未落盘可用 auth 文件：{msg}",
+            )
+        else:
+            logger.info("[Roxy注册][Codex] 成功：%s，%s，CPA 已落盘，本地记录=%s", email, msg, path or "disabled")
+            codex_result = proto._codex_result(
+                status="success",
+                ok=True,
+                email=email,
+                file_path=str(path) if path else None,
+                callback_url=callback_url,
+                message=f"一段式: {msg}",
+            )
 
         # 尝试拿 chatgpt session 作为 access_token(备用;不阻塞)
         access_token = ""
@@ -2296,6 +2433,17 @@ def run_roxy_registration_and_codex(
         except Exception as exc:
             logger.warning("[Roxy注册] 一段式获取 chatgpt session 失败(不阻塞): %s", exc)
             session_info = {}
+            # 兜底：从浏览器已登录 cookie 走协议层直接拉 /api/auth/session（不阻塞）
+            try:
+                cookie_session = _fetch_chatgpt_session_via_cookies(driver)
+                if cookie_session and cookie_session.get("accessToken"):
+                    session_info = cookie_session
+                    access_token = cookie_session.get("accessToken") or ""
+                    logger.info("[Roxy注册] 一段式 cookie 协议兜底成功：%s", email)
+                else:
+                    logger.warning("[Roxy注册] 一段式 cookie 协议兜底未拿到 accessToken（AT 保持为空，不阻塞）")
+            except Exception as exc2:
+                logger.warning("[Roxy注册] 一段式 cookie 协议兜底异常（不阻塞）: %s", exc2)
 
         codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
         account_id = save_account_data(

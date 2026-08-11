@@ -1398,6 +1398,20 @@ def _run_roxy_codex_oauth_once(
                 submit_payload=submit_payload,
             )
             msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
+            if not proto._verify_cpa_auth_landed(email):
+                logger.warning(
+                    "[Codex][Browser] callback 已提交但 CPA 侧未检测到可用 auth 文件：%s，本地记录=%s",
+                    email, path or "disabled",
+                )
+                return proto._codex_result(
+                    status="failed",
+                    ok=False,
+                    email=email,
+                    file_path=str(path) if path else None,
+                    callback_url=callback_url,
+                    message=f"{_codex_driver_name()}: CPA callback 提交成功但未落盘可用 auth 文件：{msg}",
+                )
+            logger.info("[Codex][Browser] 成功：%s，%s，CPA 已落盘，本地记录=%s", email, msg, path or "disabled")
             return proto._codex_result(
                 status="success",
                 ok=True,
