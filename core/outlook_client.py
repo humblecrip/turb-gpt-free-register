@@ -777,13 +777,8 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
     http = _ms_http()
     mail: imaplib.IMAP4_SSL | None = None
     try:
-        try:
-            token = _live_imap_access_token(account, http=http)
-            token_source = "live_imap_new"
-        except Exception as live_exc:
-            logger.debug("[Outlook] Live IMAP(New) token 获取失败，尝试 Entra IMAP token: %s", str(live_exc)[:220])
-            token, _kind = _ms_access_token(account, http=http, preferred_kind="outlook")
-            token_source = "entra_outlook"
+        token, _kind = _ms_access_token(account, http=http, preferred_kind="outlook")
+        token_source = "entra_outlook"
         auth_string = f"user={account.email}\x01auth=Bearer {token}\x01\x01"
         mail = imaplib.IMAP4_SSL("outlook.office365.com", 993)
         mail.authenticate("XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
@@ -810,14 +805,11 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
                     continue
                 msg = email_lib.message_from_bytes(raw)
                 item = _imap_msg_to_dict(msg)
-                item["_fetch_source"] = "imap_new" if token_source == "live_imap_new" else "imap_entra_outlook"
+                item["_fetch_source"] = "imap_entra_outlook"
                 out.append(item)
             except Exception as exc:
                 logger.debug("[Outlook] 本地 IMAP 解析邮件失败 mid=%s: %s", mid, exc)
-        if token_source == "live_imap_new":
-            logger.info("[Outlook] 本地 IMAP(New) 直连拿到 %s 封邮件", len(out))
-        else:
-            logger.info("[Outlook] 本地 IMAP 直连拿到 %s 封邮件 token_source=%s", len(out), token_source)
+        logger.info("[Outlook] 本地 IMAP 直连拿到 %s 封邮件 token_source=%s", len(out), token_source)
         return out
     except Exception as exc:
         logger.warning("[Outlook] 本地 IMAP 直连失败: %s: %s", type(exc).__name__, exc)
