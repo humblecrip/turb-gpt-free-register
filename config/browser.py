@@ -82,6 +82,9 @@ CLOUD_PROXY_ORG_KEYWORDS = [
 COUNTRY_LOCALE_PROFILE_MAP = {
     "JP": "jp", "CN": "cn", "HK": "hk", "TW": "tw", "US": "us", "CA": "us",
     "SG": "sg", "GB": "gb", "AU": "gb", "DE": "de", "FR": "fr", "NL": "nl",
+    "BR": "br", "CO": "co", "PT": "pt", "AR": "es", "MX": "es", "CL": "es",
+    "IT": "it", "ES": "es", "RU": "ru", "IN": "en", "TH": "th", "ID": "id",
+    "KR": "kr", "TR": "tr",
 }
 
 BROWSER_LOCALE_PROFILES = {
@@ -95,6 +98,16 @@ BROWSER_LOCALE_PROFILES = {
     "de": {"navigator_language": "de-DE", "navigator_languages": ["de-DE"], "accept_language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Berlin", "timezone_offset_minutes": 2 * 60, "timezone_name": "Central European Summer Time"},
     "fr": {"navigator_language": "fr-FR", "navigator_languages": ["fr-FR"], "accept_language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Paris", "timezone_offset_minutes": 2 * 60, "timezone_name": "Central European Summer Time"},
     "nl": {"navigator_language": "nl-NL", "navigator_languages": ["nl-NL"], "accept_language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Amsterdam", "timezone_offset_minutes": 2 * 60, "timezone_name": "Central European Summer Time"},
+    "br": {"navigator_language": "pt-BR", "navigator_languages": ["pt-BR"], "accept_language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "America/Sao_Paulo", "timezone_offset_minutes": -3 * 60, "timezone_name": "Brasilia Standard Time"},
+    "co": {"navigator_language": "es-CO", "navigator_languages": ["es-CO"], "accept_language": "es-CO,es;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "America/Bogota", "timezone_offset_minutes": -5 * 60, "timezone_name": "Colombia Standard Time"},
+    "pt": {"navigator_language": "pt-PT", "navigator_languages": ["pt-PT"], "accept_language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Lisbon", "timezone_offset_minutes": 1 * 60, "timezone_name": "Western European Summer Time"},
+    "es": {"navigator_language": "es-ES", "navigator_languages": ["es-ES"], "accept_language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Madrid", "timezone_offset_minutes": 2 * 60, "timezone_name": "Central European Summer Time"},
+    "it": {"navigator_language": "it-IT", "navigator_languages": ["it-IT"], "accept_language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Rome", "timezone_offset_minutes": 2 * 60, "timezone_name": "Central European Summer Time"},
+    "ru": {"navigator_language": "ru-RU", "navigator_languages": ["ru-RU"], "accept_language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Moscow", "timezone_offset_minutes": 3 * 60, "timezone_name": "Moscow Standard Time"},
+    "kr": {"navigator_language": "ko-KR", "navigator_languages": ["ko-KR"], "accept_language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Asia/Seoul", "timezone_offset_minutes": 9 * 60, "timezone_name": "Korea Standard Time"},
+    "th": {"navigator_language": "th-TH", "navigator_languages": ["th-TH"], "accept_language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Asia/Bangkok", "timezone_offset_minutes": 7 * 60, "timezone_name": "Indochina Time"},
+    "id": {"navigator_language": "id-ID", "navigator_languages": ["id-ID"], "accept_language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Asia/Jakarta", "timezone_offset_minutes": 7 * 60, "timezone_name": "Western Indonesia Time"},
+    "tr": {"navigator_language": "tr-TR", "navigator_languages": ["tr-TR"], "accept_language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Europe/Istanbul", "timezone_offset_minutes": 3 * 60, "timezone_name": "Turkey Standard Time"},
 }
 
 TIMEZONE_NAME_BY_IANA = {

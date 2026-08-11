@@ -496,6 +496,12 @@ class BrowserSession:
         """发送 GET 请求"""
         self._raise_if_circuit_open()
         headers = self._attach_openai_target_headers_for_url(url, headers)
+        # GET 请求不需要 body;content-type 会被 Cloudflare 识别为异常并返回 403 挑战页。
+        # 修复:对 GET 统一去掉 content-type(实测去除此 header 后 403→200)。
+        if headers:
+            headers = dict(headers)
+            headers.pop("content-type", None)
+            headers.pop("Content-Type", None)
         resp = self.session.get(url, headers=headers, **kwargs)
         return self._observe_response_for_circuit_breaker(resp, url)
 

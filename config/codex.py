@@ -85,8 +85,23 @@ CPA_REQUEST_TIMEOUT: int = 30
 CPA_CALLBACK_SUBMIT_RETRIES: int = 5
 CPA_CALLBACK_SUBMIT_RETRY_DELAY: int = 6
 
+# 提交 callback 后轮询校验 CPA 侧是否真实落盘可用 auth 文件的参数。
+# CPA 侧换 token / 落盘可能有 1-5 秒延迟，默认窗口 3 × 2 = 6 秒；CPA 服务端处理慢可调大重试次数。
+CPA_CALLBACK_VERIFY_RETRIES: int = 3
+CPA_CALLBACK_VERIFY_DELAY: float = 2.0
+
 # CPA 未返回完整 auth json 时，是否仍在本地 codex_accounts/ 记录一份回调提交凭据
 CPA_SAVE_CALLBACK_RECEIPT: bool = True
+
+# ============================================================
+# CPA 401 自动重上号（re-auth）配置
+# ============================================================
+
+# 重上号前是否先删除 CPA 侧失效凭证（DELETE /v0/management/auth-files?name=xxx）
+CPA_REAUTH_DELETE_FIRST: bool = True
+
+# 判定"高失败"的阈值：failed >= N 视为失效号（配合 disabled/error/unavailable 一起判定）
+CPA_DEAD_FAILED_THRESHOLD: int = 20
 
 # ============================================================
 # 接码平台（手机短信验证用）
@@ -96,20 +111,23 @@ CPA_SAVE_CALLBACK_RECEIPT: bool = True
 #   "h"       = 本地 H 取号服务，接口说明见 H_API.md
 # ============================================================
 
-SMS_PROVIDER: str = "l"
+SMS_PROVIDER: str = "grizzly"
 
 # 接码 API 基址（GET handler）
-SMS_API_BASE: str = "https://api.grizzlysms.com/stubs/handler_api.php"
+# HeroSMS 走 SMS-Activate 兼容协议，与 GrizzlySMS 同构，base 指到 HeroSMS
+SMS_API_BASE: str = "https://hero-sms.com/stubs/handler_api.php"
 
-# 接码 API 密钥（在 GrizzlySMS 后台 → 设置 获取）
+# 接码 API 密钥（在 HeroSMS 后台 → 设置 获取）
 # 留空时 Codex 授权的手机验证步会失败；如不需要 Codex 自动授权，把 ENABLE_CODEX_AUTO=False。
 SMS_API_KEY: str = env_str("SMS_API_KEY", "")
 
 # 服务代码：OpenAI = "dr"
-SMS_SERVICE: str = "openai"
+SMS_SERVICE: str = "dr"
 
-# 国家代码：葡萄牙 = "117" / 美国 = "187"
-SMS_COUNTRY: str = "10"
+# 国家代码：巴西 = "73"（优先） / 哥伦比亚 = "33" / 美国 = "187"
+SMS_COUNTRY: str = "73"
+# 备选国家列表（逗号分隔），主国家无号时依次尝试
+SMS_FALLBACK_COUNTRIES: str = "33"
 
 # 单个号愿意支付的最高价格（留空=不限）。透传给 getNumber 的 maxPrice。
 SMS_MAX_PRICE: str = ""
@@ -161,4 +179,4 @@ L_ADMIN_AUTH_CODE: str = env_str("L_ADMIN_AUTH_CODE", "")
 L_PHONE_PREFIX: str = ""
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})
+apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_CALLBACK_VERIFY_RETRIES': 'int', 'CPA_CALLBACK_VERIFY_DELAY': 'float', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'CPA_REAUTH_DELETE_FIRST': 'bool', 'CPA_DEAD_FAILED_THRESHOLD': 'int', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})

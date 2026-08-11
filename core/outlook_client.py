@@ -640,12 +640,22 @@ def _normalize_ms_message(m: dict) -> dict:
     body = m.get("body") if isinstance(m.get("body"), dict) else {}
     content = body.get("content") if isinstance(body, dict) else ""
     received = m.get("receivedDateTime") or m.get("DateTimeReceived") or m.get("date") or ""
+    # 解析收件人(toRecipients / ToRecipients):用于 iCloud HME 别名池按收件人过滤。
+    to_list = []
+    for r in (m.get("toRecipients") or m.get("ToRecipients") or []):
+        if isinstance(r, dict):
+            ea = r.get("emailAddress") if isinstance(r.get("emailAddress"), dict) else r
+            addr = ea.get("address") or ea.get("Address") or ""
+            nm = ea.get("name") or ea.get("Name") or ""
+            if addr:
+                to_list.append({"address": addr, "name": nm})
     return {
         "id": m.get("id") or m.get("Id") or "",
         "subject": m.get("subject") or m.get("Subject") or "",
         "from": m.get("from") or m.get("From") or {},
         "fromEmail": sender.get("address") or sender.get("Address") or "",
         "fromName": sender.get("name") or sender.get("Name") or "",
+        "to": to_list,
         "receivedDateTime": received,
         "date": received,
         "bodyPreview": m.get("bodyPreview") or m.get("BodyPreview") or "",
@@ -666,7 +676,7 @@ def _fetch_graph_messages(http: CurlSession, token: str) -> list[dict]:
     params = {
         "$top": "20",
         "$orderby": "receivedDateTime desc",
-        "$select": "id,subject,from,receivedDateTime,bodyPreview,body",
+        "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,body",
     }
     resp = http.get(url, headers=headers, params=params)
     text = resp.text or ""
@@ -693,12 +703,12 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
         {
             "$top": "20",
             "$orderby": "ReceivedDateTime desc",
-            "$select": "Id,Subject,From,ReceivedDateTime,BodyPreview,Body",
+            "$select": "Id,Subject,From,ToRecipients,ReceivedDateTime,BodyPreview,Body",
         },
         {
             "$top": "20",
             "$orderby": "DateTimeReceived desc",
-            "$select": "Id,Subject,From,DateTimeReceived,BodyPreview,Body",
+            "$select": "Id,Subject,From,ToRecipients,DateTimeReceived,BodyPreview,Body",
         },
         {"$top": "20"},
     ]
@@ -732,6 +742,17 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
             email_addr = {}
         body_obj = m.get("Body") or m.get("body") if isinstance(m.get("Body") or m.get("body"), dict) else {}
         received = m.get("ReceivedDateTime") or m.get("DateTimeReceived") or m.get("receivedDateTime") or ""
+        # Outlook REST 收件人(ToRecipients)结构: [{"EmailAddress": {"Address","Name"}}]
+        to_list = []
+        for r in (m.get("ToRecipients") or m.get("toRecipients") or []):
+            if isinstance(r, dict):
+                ea = r.get("EmailAddress") or r.get("emailAddress") or r
+                if not isinstance(ea, dict):
+                    ea = {}
+                addr = ea.get("Address") or ea.get("address") or ""
+                nm = ea.get("Name") or ea.get("name") or ""
+                if addr:
+                    to_list.append({"address": addr, "name": nm})
         out.append({
             "_fetch_source": "outlook_rest",
             "id": m.get("Id") or m.get("id") or "",
@@ -739,6 +760,7 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
             "from": {"emailAddress": {"address": email_addr.get("Address") or email_addr.get("address") or "", "name": email_addr.get("Name") or email_addr.get("name") or ""}},
             "fromEmail": email_addr.get("Address") or email_addr.get("address") or "",
             "fromName": email_addr.get("Name") or email_addr.get("name") or "",
+            "to": to_list,
             "receivedDateTime": received,
             "date": received,
             "bodyPreview": m.get("BodyPreview") or m.get("bodyPreview") or "",

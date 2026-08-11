@@ -19,7 +19,7 @@ from config.env_loader import env_str, apply_env_overrides
 REGISTRATION_DRIVER: str = "roxy"
 
 # RoxyBrowser 本地 API
-ROXY_API_BASE: str = "http://127.0.0.1:50100"
+ROXY_API_BASE: str = "http://127.0.0.1:50000"
 ROXY_API_TOKEN: str = env_str("ROXY_API_TOKEN", "")
 
 # Roxy 环境/Profile ID；留空时使用 ROXY_PROFILE_CREATE_* 先创建临时环境（如果接口支持）
@@ -27,10 +27,10 @@ ROXY_PROFILE_ID: str = ""
 
 # Roxy 工作区 ID。Roxy 创建 Profile 时接口要求 workspaceId，必须填写。
 # 可在 Roxy 工作区/团队页面或 API 返回中查看。
-ROXY_WORKSPACE_ID: str = "90143"
+ROXY_WORKSPACE_ID: str = "30579"
 
 # Roxy 项目 ID。/browser/workspace 返回 project_details.projectId；创建 Profile 时一并提交。
-ROXY_PROJECT_ID: str = "97471"
+ROXY_PROJECT_ID: str = "35057"
 
 # 获取团队/工作区列表接口路径。不同版本若不同，可在 WebUI 修改；客户端也会自动尝试多个常见路径。
 ROXY_WORKSPACE_LIST_PATH: str = "/browser/workspace"
@@ -93,7 +93,7 @@ ROXY_DEFAULT_OS_VERSION: str = ""
 # 创建 Roxy 环境时是否使用 config/proxy.py 的 PROXY_POOL：
 #   False = 不主动给 Roxy 环境设置代理
 #   True  = 每次创建环境时从 PROXY_POOL 随机取一个代理写入 proxyInfo
-ROXY_CREATE_USE_PROXY_POOL: bool = False
+ROXY_CREATE_USE_PROXY_POOL: bool = True
 
 # Roxy 代理检测通道；留空则不传 checkChannel。
 ROXY_PROXY_CHECK_CHANNEL: str = "IPRust.io"

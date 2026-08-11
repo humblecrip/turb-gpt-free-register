@@ -1013,6 +1013,46 @@
       width: 11px; height: 11px;
     }
     #accountsToolbarV2 { padding-top: 12px; }
+    #accountsToolbarV2 .acc-v2-tag-select {
+      position: relative; display: inline-flex; vertical-align: middle; flex: 0 0 auto;
+    }
+    #accountsToolbarV2 .acc-v2-tag-select-btn {
+      min-height: 32px; padding: 0 30px 0 12px; font-size: 13px;
+      border: 1px solid #dcdfe6; border-radius: 6px; background: #fff; color: #606266;
+      font: inherit; cursor: pointer; line-height: 1; display: inline-flex;
+      align-items: center; justify-content: flex-start; white-space: nowrap;
+      box-sizing: border-box; position: relative; text-align: left;
+    }
+    #accountsToolbarV2 .acc-v2-tag-select-btn:hover,
+    #accountsToolbarV2 .acc-v2-tag-select.open .acc-v2-tag-select-btn {
+      border-color: #377DFF;
+    }
+    #accountsToolbarV2 .acc-v2-tag-select-btn::after {
+      content: ""; position: absolute; right: 12px; top: 50%;
+      width: 0; height: 0; margin-top: -2px;
+      border-left: 5px solid transparent; border-right: 5px solid transparent;
+      border-top: 6px solid #909399;
+    }
+    #accountsToolbarV2 .acc-v2-tag-select.open .acc-v2-tag-select-btn::after {
+      margin-top: -4px; border-top: none; border-bottom: 6px solid #909399;
+    }
+    #accountsToolbarV2 .acc-v2-tag-select-menu {
+      display: none; position: absolute; left: 0; top: calc(100% + 6px);
+      min-width: 220px; max-height: 320px; overflow-y: auto; padding: 6px; z-index: 30;
+      border-radius: 8px; background: #fff;
+      box-shadow: 0 8px 24px rgba(15,23,42,.12), 0 0 0 1px rgba(15,23,42,.04);
+      box-sizing: border-box;
+    }
+    #accountsToolbarV2 .acc-v2-tag-select.open .acc-v2-tag-select-menu { display: block; }
+    #accountsToolbarV2 .acc-v2-tag-select-item {
+      width: 100%; min-height: 30px; margin: 0; padding: 6px 8px;
+      border: none; border-radius: 6px; background: transparent;
+      color: #606266; font: inherit; font-size: 13px; cursor: pointer;
+      display: flex; align-items: center; justify-content: flex-start; gap: 6px;
+      box-sizing: border-box; white-space: nowrap; text-align: left;
+    }
+    #accountsToolbarV2 .acc-v2-tag-select-item:hover { background: #f5f7fa; }
+    #accountsToolbarV2 .acc-v2-tag-select-item input { margin: 0; }
 
     /* ---- Codex 授权 ---- */
     .codex-stats-v2 {
@@ -1098,6 +1138,22 @@
     #codexToolbarV2 .jobs-tb-btn.is-active:hover {
       background: #dce8ff; border-color: #3A7FFF; color: #3A7FFF;
     }
+    .cpa-dead-panel {
+      margin: 0 16px 16px; border: 1px solid #f0e2e2; border-radius: 8px;
+      background: #fffbfb; padding: 12px 14px;
+    }
+    .cpa-dead-header {
+      font-size: 13px; font-weight: 600; color: #c45656; margin-bottom: 8px;
+    }
+    .cpa-dead-list {
+      display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto;
+    }
+    .cpa-dead-row {
+      display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+      border: 1px solid #f3e3e3; border-radius: 6px; background: #fff; font-size: 13px;
+    }
+    .cpa-dead-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cpa-dead-meta { color: #909399; font-size: 12px; white-space: nowrap; }
     .codex-table-v2-wrap { overflow: auto; padding: 0; }
     .codex-table-v2 {
       width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px;
@@ -2137,14 +2193,15 @@
             <input type="date" id="dateToAccountsV2">
           </div>
           <button type="button" class="jobs-tb-btn" id="btnRefreshAccountsV2" title="重新加载当前筛选条件和当前页账号列表">刷新账号</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveTopV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveTopV2" onclick="checkSelectedLive()" title="重新登录选中账号;成功且未封号则标记正常,并刷新最新 AT/accessToken">查活</button>
+          <button type="button" class="jobs-tb-btn" id="btnVerdictSelectedV2" onclick="checkVerdict(Array.from(ACCOUNT_SELECTED))" disabled title="对选中账号读邮箱邮件判断封号/RT过期">判定</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnReauthRtExpiredV2" onclick="reauthRtExpired()" disabled title="对选中账号中判定为 RT 过期的,自动重上号(补跑 Codex)">重上RT过期号</button>
 
         </div>
-      </div>
+
       <div class="jobs-toolbar-v2" id="accountsToolbarV2">
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">套餐/提链</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
         </div>
@@ -2168,6 +2225,11 @@
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载TXT</button>
           <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除</button>
+          <div class="acc-v2-tag-select" id="batchTagSelectV2">
+            <button type="button" class="acc-v2-tag-select-btn" id="btnBatchTagSelectV2" aria-haspopup="listbox" aria-expanded="false" title="按状态/来源标签多选圈定账号（全库未归档）">标签筛选</button>
+            <div class="acc-v2-tag-select-menu" role="listbox" id="batchTagSelectMenuV2"></div>
+          </div>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnBatchDeleteByTagsV2" disabled title="按选中的状态/来源标签批量删除账号；删除前会确认匹配数量">批量删除</button>
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">全部</span>
@@ -2270,6 +2332,14 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCodexDownloadBulkCpaV2" disabled title="从 CPA auth-files 下载选中账号的真实 Codex JSON，并打包成 ZIP（可直接解压放入 CPA auth-dir）">从CPA下载</button>
         <button type="button" class="jobs-tb-btn" id="btnCodexArchiveBulkV2" disabled title="归档选中的 Codex 授权凭证；默认列表不再显示">归档选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnCodexDeleteBulkV2" disabled title="删除选中的本地 Codex JSON 凭证文件">删除选中</button>
+        <button type="button" class="jobs-tb-btn" id="btnScanCpaDeadV2" title="扫描 CPA 侧失效（disabled/error/unavailable/高失败）的 codex 凭证，仅展示不删除">扫描失效</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnReauthCpaDeadV2" title="对扫描出的失效号重新上号：删 CPA 失效凭证 → 复用原邮箱补跑 OAuth → 新凭证自动回传 CPA（每个号消耗 1 OTP + 1 接码短信）">重上失效号</button>
+      </div>
+      <div id="cpaDeadPanelV2" class="cpa-dead-panel">
+        <div class="cpa-dead-header">
+          <span id="cpaDeadSummaryV2" class="cpa-dead-summary"></span>
+        </div>
+        <div id="cpaDeadListV2" class="cpa-dead-list"></div>
       </div>
       <div class="codex-table-v2-wrap">
         <table class="codex-table-v2">
@@ -3356,10 +3426,19 @@ function _tokenCellV2(r) {
   else if (live === 'running') liveHtml = `<div class="acc-v2-sub" title="${esc(liveAt)}" style="color:#e6a23c">查活: 运行中</div>`;
   else if (live === 'deactivated') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#f56c6c">查活: 已废</div>`;
   else if (live === 'failed') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#e6a23c">查活: 失败</div>`;
+  // verdict 徽章:对非 normal 的查活结果,标记封号/RT过期/未知
+  let verdictHtml = '';
+  const v = r._verdict || '';
+  if (v === 'banned') verdictHtml = `<span class="pill status-failed" style="font-size:11px;margin-left:4px" title="邮箱确认:收到 OpenAI 停用通知">封号</span>`;
+  else if (v === 'rt_expired') verdictHtml = `<span class="pill" style="background:#e6a23c;color:#fff;font-size:11px;margin-left:4px" title="邮箱未发现停用通知,可重上号">RT过期</span>`;
+  else if (v === 'unknown') verdictHtml = `<span class="pill" style="background:#909399;color:#fff;font-size:11px;margin-left:4px" title="无法判定原因">未知</span>`;
+  const verdictBtn = (live === 'failed' || live === 'deactivated') && !v
+    ? `<button class="acc-v2-sub" style="font-size:11px;padding:0 4px;margin-left:4px;cursor:pointer" onclick="checkVerdict(${Number(r.id)}, this)" title="读取邮箱邮件判断封号还是RT过期">判定</button>`
+    : '';
   if (r.has_access_token) {
-    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${liveHtml}`;
+    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${liveHtml}${verdictHtml}${verdictBtn}`;
   }
-  return `<span class="pill status-failed">无Token</span>${liveHtml}`;
+  return `<span class="pill status-failed">无Token</span>${liveHtml}${verdictHtml}${verdictBtn}`;
 }
 function _accountsV2MoreMenu(r) {
   const parts = [
@@ -3448,6 +3527,7 @@ function updateAccountSelectionUi(pageRows = null) {
     'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnNoteSelectedAccountsV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
+    'btnVerdictSelectedV2', 'btnReauthRtExpiredV2',
   ];
   v2Ids.forEach(id => {
     const el = document.getElementById(id);
@@ -4306,7 +4386,7 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
 并发线程数：${workers}`;
   if (!confirm(msg)) return;
   const firstAcc = ACCOUNTS.find(a => Number(a.id) === Number(ids[0]));
-  const btn = btnArg || $('#btnCheckSelectedLiveV2');
+  const btn = btnArg || $('#btnCheckSelectedLiveTopV2');
   const old = btn ? btn.textContent : '';
   if (btn) {
     btn.disabled = true;
@@ -4333,6 +4413,72 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
       btn.textContent = old;
       btn.disabled = false;
     }
+  }
+}
+
+async function checkVerdict(ids, btn) {
+  if (!ids) return;
+  const idsArr = Array.isArray(ids) ? ids : [ids];
+  if (idsArr.length === 0) return;
+  if (btn) { btn.disabled = true; btn.textContent = '判定中...'; }
+  try {
+    const r = await api(`/api/accounts/check-live-verdict?account_ids=${idsArr.join(',')}`);
+    const verdicts = r.accounts || [];
+    for (const vd of verdicts) {
+      const acc = ACCOUNTS.find(a => Number(a.id) === Number(vd.id));
+      if (acc) acc._verdict = vd.verdict || '';
+    }
+    if (idsArr.length === 1 && verdicts[0]?.verdict) {
+      const vd = verdicts[0];
+      const label = vd.verdict === 'banned' ? '🔴 封号' : vd.verdict === 'rt_expired' ? '🟡 RT过期' : vd.verdict === 'live' ? '🟢 正常' : '⚪ 未知';
+      showToast(`${label}: ${vd.reason || ''}`);
+    }
+    renderAccounts();
+  } catch(err) {
+    showToast('判定失败: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '判定'; }
+  }
+}
+
+
+async function reauthRtExpired() {
+  const ids = Array.from(ACCOUNT_SELECTED);
+  if (ids.length === 0) { showToast('请先选择账号'); return; }
+  // 先调用 verdict 接口获取各账号的判定结果
+  try {
+    const r = await api(`/api/accounts/check-live-verdict?account_ids=${ids.join(',')}`);
+    const verdicts = r.accounts || [];
+    const rtExpired = verdicts.filter(v => v.verdict === 'rt_expired');
+    const banned = verdicts.filter(v => v.verdict === 'banned');
+    const unknown = verdicts.filter(v => v.verdict === 'unknown');
+    if (rtExpired.length === 0) {
+      let msg = '没有找到可重上的 RT 过期号。';
+      if (banned.length) msg += `\n${banned.length} 个判定为封号(已跳过)。`;
+      if (unknown.length) msg += `\n${unknown.length} 个无法判定(已跳过)。`;
+      showToast(msg);
+      return;
+    }
+    const msg = `确定重上 ${rtExpired.length} 个 RT 过期号吗?\n(封号 ${banned.length} 个、未知 ${unknown.length} 个已跳过)\n\n每个消耗 1 封邮箱 OTP + 1 个接码短信(约 $0.13)`;
+    if (!confirm(msg)) return;
+    // 调 reauth 接口
+    const emails = rtExpired.map(v => v.email).filter(Boolean);
+    const reauthR = await api('/api/cpa/reauth/run', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({emails}),
+    });
+    showToast(reauthR.message || `已开始重上 ${rtExpired.length} 个号`);
+    if (reauthR.batch_id) {
+      // 打开 status 轮询
+      setTimeout(() => {
+        window.open('#', '_self');
+        // 简单提示
+        showToast('批号: ' + reauthR.batch_id);
+      }, 1000);
+    }
+  } catch(err) {
+    showToast('重上号失败: ' + err.message);
   }
 }
 
@@ -4420,6 +4566,93 @@ async function deleteSelectedAccounts() {
   } catch(err) {
     showToast('批量删除失败: ' + err.message);
     updateAccountSelectionUi();
+  }
+}
+
+// 状态/来源自动分类标签（key 与后端 db.ACCOUNT_TAG_KEYS 对应，规则在后端）
+const ACCOUNT_TAGS = [
+  {key:'dead', label:'已废号'},
+  {key:'outlook', label:'Outlook账号'},
+  {key:'icloud', label:'iCloud账号'},
+  {key:'no_token', label:'无Token'},
+  {key:'plus', label:'已开通Plus'},
+  {key:'free', label:'免费号'},
+  {key:'token_expired', label:'Token已过期'},
+  {key:'codex_success', label:'Codex成功'},
+  {key:'codex_failed', label:'Codex失败'},
+  {key:'codex_pending', label:'Codex未跑'},
+  {key:'live_failed', label:'查活失败'},
+  {key:'live_pending', label:'未查活'},
+];
+
+function getSelectedBatchTags() {
+  const menu = $('#batchTagSelectMenuV2');
+  if (!menu) return [];
+  const keys = [];
+  menu.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+    if (cb.value) keys.push(cb.value);
+  });
+  return keys;
+}
+
+function syncBatchDeleteByTagsUi() {
+  const btn = $('#btnBatchDeleteByTagsV2');
+  const sel = getSelectedBatchTags();
+  if (btn) btn.disabled = sel.length === 0;
+  return sel;
+}
+
+function initBatchTagSelectV2() {
+  const wrap = $('#batchTagSelectV2');
+  const btn = $('#btnBatchTagSelectV2');
+  const menu = $('#batchTagSelectMenuV2');
+  if (!wrap || !btn || !menu || menu.dataset.bound) return;
+  menu.dataset.bound = '1';
+  menu.innerHTML = ACCOUNT_TAGS.map(t =>
+    `<label class="acc-v2-tag-select-item"><input type="checkbox" value="${esc(t.key)}"> ${esc(t.label)}</label>`
+  ).join('');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = !wrap.classList.contains('open');
+    wrap.classList.toggle('open', willOpen);
+    btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  });
+  menu.addEventListener('change', (e) => {
+    if (e.target && e.target.type === 'checkbox') syncBatchDeleteByTagsUi();
+  });
+  document.addEventListener('click', (e) => {
+    if (wrap.contains(e.target)) return;
+    wrap.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+async function batchDeleteByTags() {
+  const tags = getSelectedBatchTags();
+  if (tags.length === 0) { showToast('请先选择标签'); return; }
+  const btn = $('#btnBatchDeleteByTagsV2');
+  if (btn) btn.disabled = true;
+  try {
+    const m = await api('/api/accounts/match-by-tags', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tags}),
+    });
+    const count = Number(m.matched_count || 0);
+    if (count === 0) { showToast('没有匹配到符合条件的账号'); return; }
+    if (!confirm(`将删除 ${count} 个账号，确定吗？\n\n会从本地账号列表、注册成功邮箱和 token 文件中移除。`)) return;
+    const r = await api('/api/accounts/delete-bulk', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account_ids: m.matched_ids}),
+    });
+    const skippedCount = (r.skipped || []).length;
+    showToast(skippedCount ? `已删除 ${r.deleted_count || 0} 个，跳过 ${skippedCount} 个` : `已删除 ${r.deleted_count || 0} 个`);
+    loadAccounts(); loadSummary();
+  } catch(err) {
+    showToast('批量删除失败: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = getSelectedBatchTags().length === 0;
   }
 }
 
@@ -4576,6 +4809,8 @@ async function copySelectedAccountTokens() {
   bind('btnDownloadSelectedTxtV2', downloadSelectedAccountTxt);
   bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
+  bind('btnBatchDeleteByTagsV2', batchDeleteByTags);
+  initBatchTagSelectV2();
 })();
 
 // ---------- 邮箱池 ----------
@@ -5046,6 +5281,93 @@ function _codexStatusBadge(r) {
 function closeCodexV2MoreMenus() {
   document.querySelectorAll('.codex-table-v2 .acc-v2-more.open').forEach(el => el.classList.remove('open'));
 }
+
+// ---------- CPA 401 自动重上号 ----------
+let CPA_DEAD = [];
+function _cpaDeadBadge(d) {
+  const status = d.status || 'unknown';
+  const cls = status === 'disabled' ? 'status-used' : (status === 'error' ? 'status-failed' : 'status-available');
+  return `<span class="pill ${cls}">${esc(status)}</span>`;
+}
+function renderCpaDead() {
+  const host = document.getElementById('cpaDeadListV2');
+  const summary = document.getElementById('cpaDeadSummaryV2');
+  if (!host) return;
+  if (!CPA_DEAD.length) {
+    host.innerHTML = `<div class="jobs-v2-empty">未发现失效号，或尚未扫描。点「扫描失效」查看。</div>`;
+    if (summary) summary.textContent = '';
+    return;
+  }
+  const rows = CPA_DEAD.map(d => {
+    const reauth = d.reauthable
+      ? `<span class="pill status-available">可重上</span>`
+      : `<span class="pill status-failed" title="本地邮箱池无法解析取码，需先导入该邮箱">不可重上</span>`;
+    const why = d.dead_by === '401'
+      ? `<span class="pill status-failed" title="用 access_token 实际请求 OpenAI 返回 401">接口401</span>`
+      : `<span class="pill status-used" title="CPA 标记 disabled/error/unavailable 或高失败">元数据失效</span>`;
+    return `<div class="cpa-dead-row">
+      <label class="acc-v2-check"><input type="checkbox" data-dead-email="${esc(d.email)}" ${d.reauthable ? '' : 'disabled'} checked></label>
+      <span class="cpa-dead-email" title="${esc(d.name)}">${esc(d.email)}</span>
+      ${_cpaDeadBadge(d)}
+      ${why}
+      ${reauth}
+      <span class="cpa-dead-meta">suc=${d.success} fail=${d.failed}</span>
+    </div>`;
+  }).join('');
+  host.innerHTML = rows;
+  if (summary) summary.textContent = `共 ${CPA_DEAD.length} 个失效号`;
+}
+async function scanCpaDead() {
+  const btn = document.getElementById('btnScanCpaDeadV2');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/cpa/reauth/scan');
+    CPA_DEAD = r.dead || [];
+    renderCpaDead();
+    showToast(`扫描完成：${CPA_DEAD.length} 个失效号`);
+  } catch(err) {
+    showToast('扫描失败: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+function _selectedDeadEmails() {
+  const cbs = document.querySelectorAll('#cpaDeadListV2 input[data-dead-email]:checked');
+  return Array.from(cbs).map(cb => cb.dataset.deadEmail);
+}
+async function reauthCpaDead() {
+  const emails = _selectedDeadEmails();
+  if (!emails.length) { showToast('请先勾选要重上的失效号'); return; }
+  if (!confirm(`对 ${emails.length} 个失效号重新上号？\n\n${emails.map(e => '  • ' + e).join('\n')}\n\n每个号将：\n  • 删除 CPA 失效凭证\n  • 复用原邮箱重新走 Codex OAuth（消耗 1 封 OTP + 1 个接码短信，约 $0.13）\n\n在后台执行，完成后新凭证自动回传 CPA。`)) return;
+  const btn = document.getElementById('btnReauthCpaDeadV2');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/cpa/reauth/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ emails }) });
+    showToast(r.message || '已开始重上号');
+    _pollCpaReauthStatus();
+  } catch(err) {
+    showToast('触发重上号失败: ' + err.message);
+    if (btn) btn.disabled = false;
+  }
+}
+function _pollCpaReauthStatus() {
+  const poll = setInterval(async () => {
+    try {
+      const r = await api('/api/cpa/reauth/status');
+      if (!r.running) {
+        clearInterval(poll);
+        const btn = document.getElementById('btnReauthCpaDeadV2');
+        if (btn) btn.disabled = false;
+        const ok = r.ok_count || 0, fail = r.failed_count || 0;
+        if (ok + fail > 0) {
+          showToast(`重上号完成：成功 ${ok}，失败 ${fail}`);
+        }
+        loadCodex();
+        scanCpaDead();
+      }
+    } catch(e) { /* 忽略轮询瞬时错误 */ }
+  }, 5000);
+}
 function positionCodexV2MoreMenu(wrap) {
   const btn = wrap.querySelector('.acc-v2-more-btn');
   const menu = wrap.querySelector('.acc-v2-more-menu');
@@ -5371,6 +5693,8 @@ async function codexDeleteBulk() {
   bind('btnCodexDownloadBulkCpaV2', codexDownloadBulkCpa);
   bind('btnCodexArchiveBulkV2', codexArchiveSelected);
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
+  bind('btnScanCpaDeadV2', scanCpaDead);
+  bind('btnReauthCpaDeadV2', reauthCpaDead);
   document.addEventListener('click', (e) => {
     if (e.target.closest('.codex-table-v2 .acc-v2-more')) return;
     closeCodexV2MoreMenus();

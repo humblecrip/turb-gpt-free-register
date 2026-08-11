@@ -639,6 +639,49 @@ def _submit_cpa_callback(callback_url: str) -> dict:
     raise RuntimeError(f"[Codex][CPA] callback 提交失败：{last_exc}")
 
 
+def _verify_cpa_auth_landed(email, *, max_attempts=None, delay=None) -> bool:
+    """
+    提交 CPA callback 后轮询校验 CPA 侧是否真实落盘了可用 auth 文件。
+
+    判定标准：能在 CPA auth-files 中找到匹配该邮箱的文件，文件 status 不在
+    error/unavailable/disabled 内，且下载内容解析后 access_token 非空。
+
+    "callback 提交返回 ok" ≠ "CPA 落盘成功"，本函数用于纠正假 success：
+    返回 False 说明 callback 已提交但 CPA 侧未落盘可用凭证，调用方应标 failed。
+    """
+    max_attempts = max(1, int(max_attempts or getattr(_cfg, "CPA_CALLBACK_VERIFY_RETRIES", 3)))
+    delay = max(0.5, float(delay if delay is not None else getattr(_cfg, "CPA_CALLBACK_VERIFY_DELAY", 2.0)))
+    for attempt in range(1, max_attempts + 1):
+        meta = None
+        try:
+            meta = find_cpa_codex_auth_file(email=email)
+        except Exception:
+            meta = None
+        if meta:
+            name = str((meta or {}).get("name") or "")
+            status = str((meta or {}).get("status") or "")
+            if name and status not in ("error", "unavailable", "disabled"):
+                try:
+                    text, _, _ = download_cpa_codex_auth_text(cpa_name=name)
+                    data = json.loads(text)
+                    if str(data.get("access_token") or "").strip():
+                        logger.info(
+                            "[Codex][CPA] 校验通过：CPA 侧已落盘可用 auth 文件 name=%s status=%s（第 %s/%s 次）",
+                            name, status, attempt, max_attempts,
+                        )
+                        return True
+                except Exception:
+                    pass
+            else:
+                logger.debug(
+                    "[Codex][CPA] 校验第 %s/%s 次：找到匹配文件但不可用 name=%s status=%r",
+                    attempt, max_attempts, name, status,
+                )
+        if attempt < max_attempts:
+            time.sleep(delay)
+    return False
+
+
 # ============================================================
 # 小工具：判定/解析
 # ============================================================
@@ -865,15 +908,20 @@ def _do_phone_verification(session: BrowserSession) -> None:
     http = sms_provider._http()
     max_retries = _cfg.SMS_MAX_RETRIES
     provider = _sms_provider_name()
+    # SMS 取号地区：墨西哥(54) → 安哥拉(76) → 巴西(73) → 哥伦比亚(33)
+    # 优先墨西哥和安哥拉，不用美国(187)/英国(86)（太贵）
+    country_queue = ["54", "76", "73", "33"]
+    country_idx = 0
     try:
         last_err = None
         for attempt in range(1, max_retries + 1):
             activation_id = None
             try:
-                activation_id, phone = sms_provider.acquire_number(http)
+                country = country_queue[min(country_idx, len(country_queue) - 1)]
+                activation_id, phone = sms_provider.acquire_number(http, country=country)
                 logger.info(
                     f"[Codex] 手机验证尝试 {attempt}/{max_retries}，"
-                    f"provider={provider}, activation_id={activation_id}, 号码=+{phone}"
+                    f"provider={provider}, country={country}, activation_id={activation_id}, 号码=+{phone}"
                 )
 
                 # 发短信
@@ -892,6 +940,17 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
                     )
                     sms_provider.cancel(activation_id, http)
+                    # 果断换号策略：
+                    #   whatsapp_channel → 该国家号码走 WhatsApp 无法接码，切到下一个国家（巴西→哥伦比亚→安哥拉）
+                    #   phone_used_or_max → 该号码已被 OpenAI 使用，同样切国家拿新号
+                    #   invalid_phone    → 号码格式问题，切国家
+                    if send_reason in ("whatsapp_channel", "phone_used_or_max", "invalid_phone"):
+                        if country_idx + 1 < len(country_queue):
+                            country_idx += 1
+                            logger.warning(
+                                f"[Codex] {send_reason}，果断切换国家: "
+                                f"{country_queue[country_idx-1]} → {country_queue[country_idx]}"
+                            )
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
 
@@ -909,6 +968,13 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 except sms_provider.SmsCodeTimeout:
                     logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
                     sms_provider.cancel(activation_id, http)
+                    # 短信超时多半是号码实际走了 WhatsApp 通道收不到码，果断切下一个国家
+                    if country_idx + 1 < len(country_queue):
+                        country_idx += 1
+                        logger.warning(
+                            f"[Codex] 短信超时，果断切换国家: "
+                            f"{country_queue[country_idx-1]} → {country_queue[country_idx]}"
+                        )
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
 
@@ -938,6 +1004,17 @@ def _do_phone_verification(session: BrowserSession) -> None:
             except sms_provider.SmsNoBalanceError:
                 # 余额不足，重试无意义，直接抛
                 raise
+            except sms_provider.SmsNoNumbersError as exc:
+                # 当前国家无号，切换备选国家
+                if country_idx + 1 < len(country_queue):
+                    country_idx += 1
+                    logger.warning(
+                        f"[Codex] {exc}，切换国家: {country_queue[country_idx-1]} → {country_queue[country_idx]}"
+                    )
+                    continue
+                last_err = exc
+                logger.warning(f"[Codex] 所有国家均无号：{country_queue}")
+                break
             except sms_provider.SmsProviderError as exc:
                 last_err = exc
                 logger.warning(f"[Codex] 接码尝试 {attempt} 失败：{exc}")
@@ -1451,7 +1528,20 @@ def run_codex_oauth(
                 submit_payload=submit_payload,
             )
             msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
-            logger.info(f"[Codex][CPA] 成功：{email}，{msg}，本地记录={path or 'disabled'}")
+            if not _verify_cpa_auth_landed(email):
+                logger.warning(
+                    "[Codex][CPA] callback 已提交但 CPA 侧未检测到可用 auth 文件：%s，本地记录=%s",
+                    email, path or "disabled",
+                )
+                return _codex_result(
+                    status="failed",
+                    ok=False,
+                    email=email,
+                    file_path=str(path) if path else None,
+                    callback_url=callback_url,
+                    message=f"CPA callback 提交成功但未落盘可用 auth 文件：{msg}",
+                )
+            logger.info(f"[Codex][CPA] 成功：{email}，{msg}，CPA 已落盘，本地记录={path or 'disabled'}")
             return _codex_result(
                 status="success",
                 ok=True,

@@ -203,6 +203,36 @@ def _maybe_click_passwordless_after_email(driver, email: str, timeout: int = 18)
                     logger.info("[Codex][Browser] 已点击一次性验证码入口：email=%s detail=%s", email, result)
                     human_delay("form")
                     continue
+                # 兜底：直接 JS 找 name=intent + value 含 passwordless 的按钮点击
+                logger.info("[Codex][Browser] passwordless 主匹配失败 (%s)，尝试 JS 兜底...", result.get("reason"))
+                try:
+                    clicked_js = driver.execute_script(r"""
+                    const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                      && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+                    // 精确匹配 passwordless 按钮
+                    const btn = [...document.querySelectorAll('button,[role=button],input[type=submit],input[type=button],a')].find(el => {
+                      const name = (el.getAttribute('name') || '').toLowerCase();
+                      const value = (el.getAttribute('value') || '').toLowerCase();
+                      return name === 'intent' && value.includes('passwordless') && visible(el);
+                    });
+                    if (btn) { btn.scrollIntoView({block:'center'}); btn.click(); return 'clicked'; }
+                    // 诊断：dump 所有 intent 按钮
+                    const all_intent = [...document.querySelectorAll('[name="intent"]')].filter(visible).map(el => ({
+                      value: el.getAttribute('value') || '', text: (el.innerText || '').trim().slice(0,40)
+                    }));
+                    return JSON.stringify({reason:'button_not_found', intents: all_intent.slice(0,10)});
+                    """)
+                    if clicked_js == "clicked":
+                        clicked = True
+                        logger.info("[Codex][Browser] JS 兜底点击一次性验证码成功")
+                        human_delay("form")
+                        continue
+                    if clicked_js.startswith("{") or clicked_js.startswith("["):
+                        logger.info("[Codex][Browser] JS 兜底诊断: %s", clicked_js[:300])
+                    else:
+                        logger.info("[Codex][Browser] JS 兜底也未找到按钮：%s", clicked_js)
+                except Exception as e2:
+                    logger.info("[Codex][Browser] JS 兜底异常：%s", str(e2)[:100])
         except Exception as exc:
             logger.debug("[Codex][Browser] 密码页一次性验证码入口探测失败：%s", str(exc)[:140])
         time.sleep(0.5)
@@ -256,7 +286,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         _type_email_address(driver, email, timeout=12)
         logger.info("[Codex][Browser] 已填写邮箱：%s", email)
         human_delay("form")
-        _submit_email_step(driver)
+        _submit_email_step(driver, email)
         logger.info("[Codex][Browser] 已提交邮箱，等待邮箱 OTP 页面")
         _maybe_click_passwordless_after_email(driver, email, timeout=18)
     except Exception as exc:
@@ -280,7 +310,7 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         try:
             _type_email_address(driver, email, timeout=12)
             human_delay("form")
-            _submit_email_step(driver)
+            _submit_email_step(driver, email)
             logger.info("[Codex][Browser] 已重新提交邮箱触发 OTP")
             _maybe_click_passwordless_after_email(driver, email, timeout=12)
         except Exception as exc:
@@ -548,18 +578,39 @@ def _select_sms_channel_or_raise(driver) -> None:
     has_sms = any(str(r.get('value','')).lower() in ('sms', 'text', 'text_message', 'text-message') for r in radios)
     if has_whatsapp and not has_sms:
         raise RuntimeError(f"whatsapp_channel: 页面仅提供 WhatsApp 通道 state={state}")
-    # 选择 SMS/text radio。无 radio 时可能默认 SMS。
+    # 选择 SMS/text 通道。兼容原生 radio、role=radio、以及文本含 SMS 的点击目标。
     selected = driver.execute_script(r"""
-    const radios = [...document.querySelectorAll('input[type=radio]')];
-    const sms = radios.find(el => /^(sms|text|text_message|text-message)$/i.test(el.value || ''));
-    if (!sms) return false;
-    sms.click();
-    sms.dispatchEvent(new Event('input', {bubbles:true}));
-    sms.dispatchEvent(new Event('change', {bubbles:true}));
-    return true;
+    const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length))
+      && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    const isSms = el => {
+      const v = String(el.value || el.getAttribute('value') || '').toLowerCase().replace(/[\s_-]/g, '');
+      const t = String(el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase().replace(/\s+/g, '');
+      return v === 'sms' || v === 'text' || v === 'textmessage' ||
+             /sms|テキスト|テキストメッセージ|短信|メールで受け取る|メールでコード|メールでコードを受け取る/.test(t);
+    };
+    // 1. 原生 radio 或 role=radio
+    const radio = [...document.querySelectorAll('input[type=radio],[role="radio"],[role="checkbox"]')].find(el => visible(el) && isSms(el));
+    if (radio) {
+      radio.click();
+      radio.dispatchEvent(new Event('input', {bubbles:true}));
+      radio.dispatchEvent(new Event('change', {bubbles:true}));
+      return 'radio_clicked';
+    }
+    // 2. 文本含 SMS 的可点击元素（label/button/div）
+    const clickable = [...document.querySelectorAll('label,button,a,div[role="button"],span[role="button"],[role="radio"],[role="checkbox"]')]
+      .find(el => visible(el) && isSms(el) && (el.innerText || el.textContent || '').trim().length > 0);
+    if (clickable) {
+      clickable.click();
+      clickable.dispatchEvent(new Event('input', {bubbles:true}));
+      clickable.dispatchEvent(new Event('change', {bubbles:true}));
+      return 'label_clicked';
+    }
+    return 'sms_not_found';
     """)
-    if selected:
-        logger.info("[Codex][Browser] 已选择 SMS 短信通道")
+    if selected and selected != 'sms_not_found':
+        logger.info("[Codex][Browser] 已选择 SMS 短信通道 (%s)", selected)
+    elif selected == 'sms_not_found':
+        logger.info("[Codex][Browser] 未找到 SMS 通道控件，可能默认 SMS，继续")
 
 
 def _is_phone_code_state(state: dict) -> bool:
@@ -714,9 +765,10 @@ def _set_phone_value(driver, phone: str, *, timeout: int = 10) -> dict:
     if (select) {
       // 参考 FlowPilot ensureCountrySelected：按号码前缀选择对应国家/区号，避免默认国家与号码不一致。
       const options = [...select.options];
+      const digitsOnly = String(digits || '').replace(/[^\d]/g, '');  // 去掉 + 号
       const matched = options
         .map(opt => ({opt, code: optionDialCode(opt)}))
-        .filter(x => x.code && digits.startsWith(x.code))
+        .filter(x => x.code && digitsOnly.startsWith(x.code))
         .sort((a, b) => b.code.length - a.code.length)[0];
       if (matched && select.value !== matched.opt.value) {
         select.value = matched.opt.value;
@@ -752,7 +804,22 @@ def _set_phone_value(driver, phone: str, *, timeout: int = 10) -> dict:
     };
 
     phoneInput.scrollIntoView({block:'center'});
-    setNativeValue(phoneInput, visibleValue);
+    // 逐字符输入，避免 React-Aria 电话框对一次性 setter 只接受部分字符导致末尾丢失
+    const proto2 = phoneInput instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter2 = Object.getOwnPropertyDescriptor(proto2, 'value')?.set;
+    phoneInput.focus();
+    // 先清空
+    if (setter2) setter2.call(phoneInput, ''); else phoneInput.value = '';
+    phoneInput.dispatchEvent(new Event('input', {bubbles:true}));
+    phoneInput.dispatchEvent(new Event('change', {bubbles:true}));
+    const visibleStr = String(visibleValue);
+    // 用 native setter 逐字符填，每填一个字符触发一次 input，模拟键盘
+    for (let i = 0; i < visibleStr.length; i++) {
+      const next = visibleStr.slice(0, i + 1);
+      if (setter2) setter2.call(phoneInput, next); else phoneInput.value = next;
+      phoneInput.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data: visibleStr[i]}));
+      phoneInput.dispatchEvent(new Event('change', {bubbles:true}));
+    }
     if (hiddenPhoneNumberInput) {
       hiddenPhoneNumberInput.value = e164;
       hiddenPhoneNumberInput.dispatchEvent(new Event('input', {bubbles:true}));
@@ -1077,11 +1144,16 @@ def _do_phone_verification_if_present(driver) -> None:
             return
 
         last_err = None
+        # 取号国家队列：墨西哥(54) → 安哥拉(76) → 巴西(73) → 哥伦比亚(33)
+        # 巴西号 OpenAI 常强制 WhatsApp 通道收不到码，故墨西哥/安哥拉优先。
+        country_queue = ["54", "76", "73", "33"]
+        country_idx = 0
         for attempt in range(1, max_retries + 1):
             activation_id = None
             try:
-                activation_id, phone = sms_provider.acquire_number(http)
-                logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，号码=+%s", attempt, max_retries, provider, phone)
+                country = country_queue[min(country_idx, len(country_queue) - 1)]
+                activation_id, phone = sms_provider.acquire_number(http, country=country)
+                logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，country=%s，号码=+%s", attempt, max_retries, provider, country, phone)
                 logger.info("[Codex][Browser] 准备手机号输入页，重新设置新手机号")
                 _ensure_add_phone_input(driver, reason=f"attempt-{attempt}")
                 phone_fill = _set_phone_value(driver, f"+{phone}", timeout=10)
@@ -1139,7 +1211,15 @@ def _do_phone_verification_if_present(driver) -> None:
                     raise RuntimeError(
                         f"接码平台余额不足或无可用号码，已停止换号止损：{err_text[:180]}"
                     ) from exc
-                if "invalid_auth_step" in str(exc):
+                # 果断换国家策略：
+                #   whatsapp_channel / SmsCodeTimeout → 该国家号码走 WhatsApp 或收不到码，切下一个国家
+                #   SmsNoNumbersError             → 该国家无号，切下一个国家
+                _exc_str = str(exc)
+                if any(k in _exc_str for k in ("whatsapp_channel", "SmsCodeTimeout", "NO_NUMBERS")) or isinstance(exc, sms_provider.SmsNoNumbersError):
+                    if country_idx + 1 < len(country_queue):
+                        country_idx += 1
+                        logger.warning("[Codex][Browser] 果断切换国家: %s → %s", country_queue[country_idx - 1], country_queue[country_idx])
+                if "invalid_auth_step" in _exc_str:
                     raise RuntimeError(
                         "手机号流程进入 invalid_auth_step，说明授权状态还未从 email-verification 正常跳转或已失效；"
                         "已停止继续换号，避免继续消耗号码"
@@ -1181,6 +1261,14 @@ def _finish_consent_workspace(driver) -> str:
             ["//button[contains(., 'Allow')]", "//button[contains(., 'Authorize')]", "//button[contains(., 'Continue')]"],
             ["//button[contains(., 'Select')]", "//button[contains(., 'Use workspace')]", "//button[contains(., 'Confirm')]"],
             ["//button[contains(., '允许')]", "//button[contains(., '授权')]", "//button[contains(., '继续')]", "//button[contains(., '确认')]"],
+            # 葡萄牙语（巴西出口）
+            ["//button[contains(., 'Permitir')]", "//button[contains(., 'Autorizar')]", "//button[contains(., 'Continuar')]",
+             "//button[contains(., 'Usar espaço de trabalho')]", "//button[contains(., 'Selecionar')]", "//button[contains(., 'Confirmar')]",
+             "//button[contains(., 'Concordar')]", "//button[contains(., 'Aceitar')]"],
+            # 西班牙语（哥伦比亚出口）
+            ["//button[contains(., 'Permitir')]", "//button[contains(., 'Autorizar')]", "//button[contains(., 'Continuar')]",
+             "//button[contains(., 'Usar espacio de trabajo')]", "//button[contains(., 'Seleccionar')]", "//button[contains(., 'Confirmar')]",
+             "//button[contains(., 'Aceptar')]"],
             ["button[type='submit']"],
         ]:
             if _click_if_present(driver, selectors, timeout=2):

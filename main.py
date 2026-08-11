@@ -161,6 +161,7 @@ def run_registration(
     proxy: str = None,
     otp_code: str = None,
     batch_dir=None,
+    one_shot: bool = False,
 ):
     """
     执行完整的 ChatGPT 注册流程（OTP-only，无密码）。
@@ -175,6 +176,7 @@ def run_registration(
         birthday: 生日，格式 YYYY-MM-DD
         proxy: 代理地址（不传则从 PROXY_POOL 随机抽）
         otp_code: 邮箱验证码（如果为None，会等待手动输入）
+        one_shot: True 时用一段式（直接从 CPA 授权 URL 注册，注册完成自动授权并回填 CPA）
     """
     # 可选注册驱动：
     #   protocol     = 原有纯协议（curl_cffi）
@@ -185,6 +187,16 @@ def run_registration(
     driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
     if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
         from core.roxy_registration import run_roxy_registration
+        if one_shot:
+            from core.roxy_registration import run_roxy_registration_and_codex
+            return run_roxy_registration_and_codex(
+                email=email,
+                name=name,
+                birthday=birthday or generate_random_birthday(),
+                proxy=proxy,
+                otp_code=otp_code,
+                batch_dir=batch_dir,
+            )
         return run_roxy_registration(
             email=email,
             name=name,
@@ -580,6 +592,7 @@ def main():
     parser.add_argument("--delay", type=float, default=0, help="每次注册结束后的间隔秒数")
     parser.add_argument("--continue-on-fail", action="store_true", help="单个账号失败后继续注册下一个")
     parser.add_argument("--verbose", action="store_true", help="显示详细步骤日志和错误堆栈")
+    parser.add_argument("--one-shot", action="store_true", help="一段式：直接从 CPA 授权 URL 注册，注册完成自动授权并回填 CPA")
     args = parser.parse_args()
     configure_logging(args.verbose)
 
@@ -606,11 +619,11 @@ def main():
     if args.workers > 1:
         batch_dir = create_batch_archive_dir(args.count, args.workers)
         logger.info(f"[批量] 本批次归档目录：{batch_dir}")
-        results = run_parallel_batch(args.count, args.workers, args.delay, args.continue_on_fail, batch_dir)
+        results = run_parallel_batch(args.count, args.workers, args.delay, args.continue_on_fail, batch_dir, one_shot=args.one_shot)
     else:
         batch_dir = create_batch_archive_dir(args.count, args.workers)
         logger.info(f"[批量] 本批次归档目录：{batch_dir}")
-        results = run_serial_batch(args.count, args.delay, args.continue_on_fail, batch_dir)
+        results = run_serial_batch(args.count, args.delay, args.continue_on_fail, batch_dir, one_shot=args.one_shot)
 
     success_count = sum(1 for r in results if _is_success(r))
     flow_success_count = sum(
@@ -656,7 +669,7 @@ def main():
     sys.exit(0 if success_count == args.count else 1)
 
 
-def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
+def run_one_batch_item(index: int, total: int, batch_dir=None, one_shot: bool = False) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
     try:
@@ -666,6 +679,7 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
             name=name,
             birthday=birthday,
             batch_dir=batch_dir,
+            one_shot=one_shot,
             # proxy 不传 → BrowserSession 会从 PROXY_POOL 随机抽
         )
     except Exception as exc:
@@ -674,11 +688,11 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
         return {"success": False, "error": str(exc)}
 
 
-def run_serial_batch(count: int, delay: float, continue_on_fail: bool, batch_dir=None) -> list[dict]:
+def run_serial_batch(count: int, delay: float, continue_on_fail: bool, batch_dir=None, one_shot: bool = False) -> list[dict]:
     """按原有串行方式执行批量注册。"""
     results = []
     for index in range(count):
-        result = run_one_batch_item(index, count, batch_dir)
+        result = run_one_batch_item(index, count, batch_dir, one_shot=one_shot)
         results.append(result)
         if not _is_success(result) and not continue_on_fail:
             logger.error("[批量] 当前账号失败，已停止。需要继续跑可加 --continue-on-fail")
@@ -696,6 +710,7 @@ def run_parallel_batch(
     delay: float,
     continue_on_fail: bool,
     batch_dir=None,
+    one_shot: bool = False,
 ) -> list[dict]:
     """使用线程池并发执行批量注册。"""
     logger.info(f"[批量] 启用多线程注册：目标 {count}，并发 {workers}")
@@ -711,7 +726,7 @@ def run_parallel_batch(
         nonlocal next_index
         if stop_submitting or next_index >= count:
             return False
-        future = executor.submit(run_one_batch_item, next_index, count, batch_dir)
+        future = executor.submit(run_one_batch_item, next_index, count, batch_dir, one_shot=one_shot)
         future_to_index[future] = next_index
         next_index += 1
         if delay > 0 and next_index < count:

@@ -25,6 +25,16 @@ from webui import config_editor
 
 logger = logging.getLogger(__name__)
 
+# CPA re-auth 最近批次结果（内存态，供前端轮询 /api/cpa/reauth/status）
+_CPA_REAUTH_STATE: dict = {
+    "batch_id": "",
+    "running": False,
+    "ok_count": 0,
+    "failed_count": 0,
+    "results": [],
+}
+_CPA_REAUTH_LOCK = threading.RLock()
+
 def _pool_source_arg(default: str = "outlook") -> str:
     src = (request.args.get("source") or "").strip()
     if not src and request.method == "POST":
@@ -444,6 +454,33 @@ def create_app(auth_code: str | None = None) -> Flask:
             "deleted": deleted,
             "deleted_count": len(deleted),
             "skipped": skipped,
+        })
+
+    @app.post("/api/accounts/match-by-tags")
+    def api_accounts_match_by_tags():
+        """按状态/来源标签批量匹配账号 id（OR 并集，全库未归档）。Body {tags:[...]}。
+
+        不修改数据；匹配结果用于前端确认数量后再走 delete-bulk。
+        单次匹配上限 5000，超限返回错误提示缩小范围。
+        """
+        data = request.get_json(silent=True) or {}
+        tags = data.get("tags")
+        if not isinstance(tags, list) or not tags:
+            return jsonify({"ok": False, "error": "tags 必须是非空数组"}), 400
+        invalid = [t for t in tags if t not in db.ACCOUNT_TAG_KEYS]
+        if invalid:
+            return jsonify({"ok": False, "error": f"包含非法标签: {', '.join(map(str, invalid))}"}), 400
+        matched_ids = db.match_account_ids_by_tags(tags)
+        if len(matched_ids) > 5000:
+            return jsonify({
+                "ok": False,
+                "error": f"匹配到 {len(matched_ids)} 个账号，超过单次上限 5000，请缩小范围",
+            }), 400
+        return jsonify({
+            "ok": True,
+            "matched_ids": matched_ids,
+            "matched_count": len(matched_ids),
+            "tags": list(tags),
         })
 
     @app.post("/api/accounts/<int:acc_id>/note")
@@ -2067,6 +2104,133 @@ def create_app(auth_code: str | None = None) -> Flask:
             "running": codex_retry_service.is_retrying(email),
         })
 
+    # ----------------------------------------------------------
+    # CPA 401 自动重上号（scan / run）
+    # ----------------------------------------------------------
+    @app.get("/api/cpa/reauth/scan")
+    def api_cpa_reauth_scan():
+        """扫描 CPA 失效号（只读，不删除）。
+
+        失效判定：元数据失效（disabled/error/unavailable/高失败）+
+        实际 401 探测（下载 access_token 请求 OpenAI，覆盖 CPA 元数据不同步的"假活跃"号）。
+        返回 {ok, total, dead:[{name,email,status,success,failed,reauthable,dead_by}]}。
+        """
+        from config import codex as _codex_cfg
+        from core import cpa_reauth
+
+        threshold = int(getattr(_codex_cfg, "CPA_DEAD_FAILED_THRESHOLD", 20) or 20)
+        try:
+            probe_workers = int(request.args.get("probe_workers", 4) or 4)
+        except (TypeError, ValueError):
+            probe_workers = 4
+        try:
+            dead = cpa_reauth.scan_cpa_dead_accounts(failed_threshold=threshold, probe_workers=probe_workers)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"扫描失败: {type(exc).__name__}: {exc}"}), 502
+        return jsonify({"ok": True, "total": len(dead), "dead": dead})
+
+    @app.post("/api/cpa/reauth/run")
+    def api_cpa_reauth_run():
+        """对选中的失效号重新上号。Body {emails:[...], delete_first?:bool, workers?:int}。
+
+        流程：可选先删 CPA 失效凭证 → 复用原邮箱补跑 Codex OAuth（force=True）。
+        补跑成功后新凭证经 CPA callback 自动回传 CPA auth-files，并落盘本地 codex_accounts/。
+        不校验 codex_status=deactivated（失效号就是要强制重上号）。
+        """
+        from config import codex as _codex_cfg
+        from core import cpa_reauth
+
+        data = request.get_json(silent=True) or {}
+        emails = data.get("emails") or data.get("email") or []
+        if isinstance(emails, str):
+            emails = [emails]
+        if not isinstance(emails, list) or not emails:
+            return jsonify({"ok": False, "error": "emails 必须是非空数组"}), 400
+        emails = [str(e or "").strip() for e in emails]
+        emails = [e for e in emails if e]
+        if not emails:
+            return jsonify({"ok": False, "error": "emails 为空"}), 400
+        if len(emails) > 100:
+            return jsonify({"ok": False, "error": "单次最多重上 100 个号"}), 400
+
+        delete_first = bool(data.get("delete_first", getattr(_codex_cfg, "CPA_REAUTH_DELETE_FIRST", True)))
+        workers = int(data.get("workers", 1))
+
+        # 预取 CPA 列表，给每个邮箱匹配完整 name（删除时用列表里的名字才删得掉）
+        cpa_names: dict[str, str] = {}
+        try:
+            files = cpa_reauth.proto._with_net_retry("预取 CPA auth-files", cpa_reauth.proto.list_cpa_codex_auth_files)
+            for item in files:
+                email = str(item.get("email") or item.get("account") or "").strip().lower()
+                name = str(item.get("name") or "").strip()
+                if email and name:
+                    cpa_names.setdefault(email, name)
+        except Exception as exc:
+            logger.warning("[CPA][Reauth] 预取 CPA name 失败（将只用本地邮箱补跑，不删 CPA 凭证）：%s", exc)
+            delete_first = False
+
+        skipped: list[tuple[str, str]] = []
+        selected: list[str] = []
+        for email in emails:
+            if not cpa_reauth.is_email_reauthable(email):
+                skipped.append((email, "本地邮箱池无法解析取码，跳过"))
+                continue
+            if codex_retry_service.is_retrying(email):
+                skipped.append((email, "正在补跑中，跳过"))
+                continue
+            selected.append(email)
+
+        if not selected:
+            return jsonify({"ok": False, "error": "没有可重上号的邮箱", "skipped": skipped}), 409
+
+        batch_id = time.strftime("%Y%m%d-%H%M%S")
+
+        def _run_pipeline():
+            ret = cpa_reauth.run_reauth_pipeline(
+                selected,
+                delete_first=delete_first,
+                workers=workers,
+                cpa_names=cpa_names,
+                callback=None,
+            )
+            with _CPA_REAUTH_LOCK:
+                _CPA_REAUTH_STATE.update({
+                    "batch_id": batch_id,
+                    "running": False,
+                    "ok_count": ret.get("ok_count", 0),
+                    "failed_count": ret.get("failed_count", 0),
+                    "results": ret.get("results", []),
+                })
+            logger.info("[CPA][Reauth] WebUI 批量重上号完成 batch=%s ok=%s", batch_id, ret.get("ok_count"))
+
+        with _CPA_REAUTH_LOCK:
+            if _CPA_REAUTH_STATE.get("running"):
+                return jsonify({"ok": False, "error": "已有重上号批次在运行，请稍候"}), 409
+            _CPA_REAUTH_STATE.update({
+                "batch_id": batch_id,
+                "running": True,
+                "ok_count": 0,
+                "failed_count": 0,
+                "results": [],
+            })
+        threading.Thread(target=_run_pipeline, name=f"cpa-reauth-webui-{batch_id}", daemon=True).start()
+        return jsonify({
+            "ok": True,
+            "message": f"已开始重上 {len(selected)} 个失效号（并发 {workers}），完成后自动回传 CPA",
+            "started": selected,
+            "skipped": skipped,
+            "batch_id": batch_id,
+        })
+
+    @app.get("/api/cpa/reauth/status")
+    def api_cpa_reauth_status():
+        """查询最近一次重上号批次的结果。返回 {ok, running, batch_id, ok_count, failed_count, results:[...]}。"""
+        with _CPA_REAUTH_LOCK:
+            snapshot = dict(_CPA_REAUTH_STATE)
+        return jsonify({"ok": True, **snapshot})
+
+
+
     @app.get("/api/accounts/live-check-log")
     def api_account_live_check_log():
         """读取某邮箱最近一次查活日志。?email=xxx"""
@@ -2088,6 +2252,63 @@ def create_app(auth_code: str | None = None) -> Flask:
             "log": content,
             "running": live_check_service.is_checking(email),
         })
+
+    # ----------------------------------------------------------
+    # 测活判定(verdict):结合查活结果 + 邮箱邮件判断封号 vs RT过期
+    # ----------------------------------------------------------
+
+    @app.get("/api/accounts/check-live-verdict")
+    def api_account_check_live_verdict():
+        """对已查活的账号,用邮箱邮件辅助判断封号/RT过期/正常。
+
+        Query: account_ids=1,2,3 (逗号分隔)
+        Returns: {accounts: [{id, email, email_source, live_check_status,
+                              verdict: 'live'|'banned'|'rt_expired'|'unknown', reason}]}
+        """
+        ids_raw = (request.args.get("account_ids") or "").strip()
+        ids = []
+        for part in ids_raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.append(int(part))
+        if not ids:
+            return jsonify({"ok": False, "error": "account_ids 必填,逗号分隔"}), 400
+        if len(ids) > 50:
+            return jsonify({"ok": False, "error": "单次最多 50 个"}), 400
+
+        from core.account_dead_detect import detect_account_status
+        from core.email_provider import resolve_email_source
+
+        accounts = []
+        for acc_id in ids:
+            acc = db.get_account(acc_id)
+            if not acc:
+                accounts.append({"id": acc_id, "error": "账号不存在"})
+                continue
+            email = str(acc.get("email") or "")
+            live_status = str(acc.get("live_check_status") or "")
+            live_error = str(acc.get("live_check_error") or "")
+            try:
+                source = resolve_email_source(email)
+            except Exception:
+                source = "unknown"
+            live_result = {
+                "ok": live_status == "live",
+                "status": live_status,
+                "error": live_error,
+            }
+            verdict = detect_account_status(email, live_result)
+            accounts.append({
+                "id": acc_id,
+                "email": email,
+                "email_source": source,
+                "live_check_status": live_status,
+                "verdict": verdict.get("verdict"),
+                "reason": verdict.get("reason"),
+                "checked": verdict.get("checked"),
+            })
+
+        return jsonify({"ok": True, "accounts": accounts})
 
     # ----------------------------------------------------------
     # 注册任务

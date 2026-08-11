@@ -2,8 +2,8 @@
 """CloakBrowser 自动化注册配置。"""
 from config.env_loader import apply_env_overrides
 
-# 是否无头启动：False=显示窗口，True=无头。
-CLOAK_HEADLESS: bool = True
+# 是否无头启动：False=显示窗口（Turnstile 等 CF 挑战在无头模式下更严格），True=无头。
+CLOAK_HEADLESS: bool = False
 
 # 是否启用 CloakBrowser humanize 行为。
 CLOAK_HUMANIZE: bool = True
