@@ -773,7 +773,19 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
 
 
 def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
-    """本地 IMAP XOAUTH2 读取 Outlook Inbox 最新邮件。"""
+    """本地 IMAP XOAUTH2 读取 Outlook 收件箱最新邮件（INBOX + Junk）。
+
+    OpenAI 验证码大量进入 Junk 文件夹，因此同时查询两个文件夹，
+    合并后按 message-id（缺失时用 subject+date）去重。
+    """
+    def _dedupe_key(item: dict) -> str:
+        mid = str(item.get("id") or "").strip()
+        if mid:
+            return f"id:{mid}"
+        subject = str(item.get("subject") or "").strip()
+        date = str(item.get("date") or item.get("receivedDateTime") or "").strip()
+        return f"s:{subject}|d:{date}"
+
     http = _ms_http()
     mail: imaplib.IMAP4_SSL | None = None
     try:
@@ -782,34 +794,55 @@ def _fetch_imap_direct_messages(account: OutlookAccount) -> list[dict]:
         auth_string = f"user={account.email}\x01auth=Bearer {token}\x01\x01"
         mail = imaplib.IMAP4_SSL("outlook.office365.com", 993)
         mail.authenticate("XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
-        status, _data = mail.select("INBOX")
-        if status != "OK":
-            raise OutlookClientError(f"IMAP select INBOX 失败: {status}")
 
-        status, msg_ids = mail.search(None, "ALL")
-        if status != "OK":
-            raise OutlookClientError(f"IMAP search 失败: {status}")
-        ids = msg_ids[0].split() if msg_ids and msg_ids[0] else []
-        if not ids:
-            logger.debug("[Outlook] 本地 IMAP 收件箱为空")
-            return []
-
-        out = []
-        for mid in ids[-20:]:
-            status, data = mail.fetch(mid, "(RFC822)")
-            if status != "OK" or not data:
-                continue
+        # INBOX + Junk 都要查：OpenAI 验证码邮件大量进 Junk 文件夹
+        per_folder_counts: dict[str, int] = {}
+        merged: dict[str, dict] = {}
+        for folder in ("INBOX", "Junk"):
             try:
-                raw = data[0][1]
-                if not isinstance(raw, (bytes, bytearray)):
+                status, _data = mail.select(folder)
+                if status != "OK":
+                    raise OutlookClientError(f"IMAP select {folder} 失败: {status}")
+
+                status, msg_ids = mail.search(None, "ALL")
+                if status != "OK":
+                    raise OutlookClientError(f"IMAP search {folder} 失败: {status}")
+                ids = msg_ids[0].split() if msg_ids and msg_ids[0] else []
+                if not ids:
+                    per_folder_counts[folder] = 0
                     continue
-                msg = email_lib.message_from_bytes(raw)
-                item = _imap_msg_to_dict(msg)
-                item["_fetch_source"] = "imap_entra_outlook"
-                out.append(item)
+
+                folder_count = 0
+                source = "imap_inbox" if folder == "INBOX" else "imap_junk"
+                for mid in ids[-20:]:
+                    status, data = mail.fetch(mid, "(RFC822)")
+                    if status != "OK" or not data:
+                        continue
+                    try:
+                        raw = data[0][1]
+                        if not isinstance(raw, (bytes, bytearray)):
+                            continue
+                        msg = email_lib.message_from_bytes(raw)
+                        item = _imap_msg_to_dict(msg)
+                        item["_fetch_source"] = source
+                        key = _dedupe_key(item)
+                        if key in merged:
+                            continue
+                        merged[key] = item
+                        folder_count += 1
+                    except Exception as exc:
+                        logger.debug("[Outlook] 本地 IMAP 解析邮件失败 mid=%s: %s", mid, exc)
+                per_folder_counts[folder] = folder_count
             except Exception as exc:
-                logger.debug("[Outlook] 本地 IMAP 解析邮件失败 mid=%s: %s", mid, exc)
-        logger.info("[Outlook] 本地 IMAP 直连拿到 %s 封邮件 token_source=%s", len(out), token_source)
+                # 单个文件夹失败（如 Junk 不存在/权限不足）→ 跳过，不影响其他文件夹
+                logger.warning("[Outlook] 本地 IMAP 读取 %s 失败: %s: %s", folder, type(exc).__name__, exc)
+                per_folder_counts[folder] = 0
+
+        out = list(merged.values())
+        logger.info(
+            "[Outlook] 本地 IMAP 直连拿到 %s 封邮件 token_source=%s, 各文件夹: %s",
+            len(out), token_source, per_folder_counts,
+        )
         return out
     except Exception as exc:
         logger.warning("[Outlook] 本地 IMAP 直连失败: %s: %s", type(exc).__name__, exc)
