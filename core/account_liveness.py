@@ -50,7 +50,7 @@ def _network_preflight_with_retry(email: str, proxy: str | None, max_attempts: i
                 session.session.close()
             except Exception:
                 pass
-        session = BrowserSession(proxy=proxy if proxy else None)
+        session = BrowserSession(proxy=proxy)
         logger.info(
             "[查活] 会话创建完成：proxy=%s device_id=%s（网络预检第 %s/%s 次）",
             session.proxy or "配置随机/直连", session.device_id, attempt, max_attempts,
