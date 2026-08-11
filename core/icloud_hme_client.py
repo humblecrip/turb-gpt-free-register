@@ -167,12 +167,14 @@ def _fetch_otp_from_forward_target(email: str, account_id: str, after_ts: float)
             logger.debug(f"[ICloudHME] 转发目标 {target} 不在 Outlook 池,跳过")
             return None
         logger.info(f"[ICloudHME] {email} 转发到 {target},委托 outlook_client 取码")
+        # iCloud 转发目标：绕开远端 session，强制本地 IMAP/Graph 直连（稳定 microsoftonline token）
         return outlook_fetch_otp(
             target,
             after_ts=after_ts,
             max_wait=_email_cfg.OTP_MAX_WAIT,
             poll_interval=_email_cfg.OTP_POLL_INTERVAL,
             settle_seconds=getattr(_email_cfg, "OTP_SETTLE_SECONDS", 5),
+            force_direct=True,
         )
     except Exception as exc:
         logger.warning(f"[ICloudHME] 从转发目标 {target} 取码失败: {type(exc).__name__}: {exc}")

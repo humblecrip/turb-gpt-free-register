@@ -6,6 +6,8 @@
 - 不再调用 _live_imap_access_token（live_imap 兜底已移除）
 - XOAUTH2 使用该 token 认证；取到的邮件 _fetch_source == "imap_entra_outlook"
 - 认证失败 / token 获取失败时不真连网络，按现有契约返回 [] 并记 warning
+- _fetch_via / fetch_latest_otp 的 force_direct：强制本地直连、绕开远端 session
+- icloud_hme_client 转发取码传 force_direct=True
 """
 import email as email_lib
 import unittest
@@ -149,6 +151,184 @@ class FetchImapDirectStableTokenTests(unittest.TestCase):
         self.assertEqual(out, [])
         ms_token.assert_called_once()
         live_token.assert_not_called()
+
+
+class _Clock:
+    """单调递增假时钟，替代 time.time。"""
+
+    def __init__(self, start=1000.0):
+        self.t = start
+
+    def __call__(self):
+        self.t += 1.0
+        return self.t
+
+
+def _openai_msg(subject="Your OpenAI verification code is 123456"):
+    return {
+        "subject": subject,
+        "date": "2026-08-11T10:00:00Z",
+        "body": "Your code is 123456",
+        "_fetch_source": "imap_entra_outlook",
+    }
+
+
+class FetchViaForceDirectTests(unittest.TestCase):
+    def setUp(self):
+        from core import outlook_client
+
+        outlook_client._MS_TOKEN_CACHE.clear()
+        outlook_client._MS_TOKEN_FATAL_CACHE.clear()
+        outlook_client._REMOTE_DISABLED = False
+
+    def test_force_direct_imap_skips_remote(self):
+        from core import outlook_client
+
+        account = _make_account()
+        with patch("core.outlook_client._outlook_fetch_mode", return_value="auto"), patch(
+            "core.outlook_client._fetch_via_graph_direct", return_value=[]
+        ) as graph_direct, patch(
+            "core.outlook_client._fetch_imap_direct_messages", return_value=[{"id": "m1"}]
+        ) as imap_direct, patch("core.outlook_client._secure_post") as secure_post:
+            out = outlook_client._fetch_via(None, "imap", account, force_direct=True)
+
+        imap_direct.assert_called_once_with(account)
+        graph_direct.assert_not_called()
+        secure_post.assert_not_called()
+        self.assertEqual(out, [{"id": "m1"}])
+
+    def test_force_direct_graph_skips_remote(self):
+        from core import outlook_client
+
+        account = _make_account()
+        with patch("core.outlook_client._outlook_fetch_mode", return_value="auto"), patch(
+            "core.outlook_client._fetch_via_graph_direct", return_value=[{"id": "g1"}]
+        ) as graph_direct, patch(
+            "core.outlook_client._fetch_imap_direct_messages", return_value=[]
+        ) as imap_direct, patch("core.outlook_client._secure_post") as secure_post:
+            out = outlook_client._fetch_via(None, "graph", account, force_direct=True)
+
+        graph_direct.assert_called_once_with(account)
+        imap_direct.assert_not_called()
+        secure_post.assert_not_called()
+        self.assertEqual(out, [{"id": "g1"}])
+
+    def test_force_direct_unknown_protocol_returns_empty(self):
+        from core import outlook_client
+
+        account = _make_account()
+        with patch("core.outlook_client._outlook_fetch_mode", return_value="auto"), patch(
+            "core.outlook_client._fetch_via_graph_direct"
+        ) as graph_direct, patch(
+            "core.outlook_client._fetch_imap_direct_messages"
+        ) as imap_direct, patch("core.outlook_client._secure_post") as secure_post:
+            out = outlook_client._fetch_via(None, "nonsense", account, force_direct=True)
+
+        self.assertEqual(out, [])
+        graph_direct.assert_not_called()
+        imap_direct.assert_not_called()
+        secure_post.assert_not_called()
+
+    def test_no_force_direct_uses_remote_url(self):
+        from core import outlook_client
+
+        account = _make_account()
+        remote_data = {"success": True, "emails": [{"id": "r1", "subject": "hi"}]}
+        with patch("core.outlook_client._outlook_fetch_mode", return_value="remote"), patch(
+            "core.outlook_client._fetch_via_graph_direct"
+        ) as graph_direct, patch(
+            "core.outlook_client._fetch_imap_direct_messages"
+        ) as imap_direct, patch(
+            "core.outlook_client._secure_post", return_value=remote_data
+        ) as secure_post:
+            out = outlook_client._fetch_via(object(), "imap", account)
+
+        secure_post.assert_called_once()
+        self.assertIn("/api/fetch-imap", secure_post.call_args.args[1])
+        graph_direct.assert_not_called()
+        imap_direct.assert_not_called()
+        self.assertEqual(out, [{"id": "r1", "subject": "hi", "_fetch_source": "remote_imap"}])
+
+    def test_no_force_direct_graph_uses_remote_url(self):
+        from core import outlook_client
+
+        account = _make_account()
+        remote_data = {"success": True, "emails": [{"id": "r1", "subject": "hi"}]}
+        with patch("core.outlook_client._outlook_fetch_mode", return_value="remote"), patch(
+            "core.outlook_client._secure_post", return_value=remote_data
+        ) as secure_post, patch("core.outlook_client._fetch_via_graph_direct") as graph_direct, patch(
+            "core.outlook_client._fetch_imap_direct_messages"
+        ) as imap_direct:
+            out = outlook_client._fetch_via(object(), "graph", account)
+
+        secure_post.assert_called_once()
+        self.assertIn("/api/fetch-graph", secure_post.call_args.args[1])
+        graph_direct.assert_not_called()
+        imap_direct.assert_not_called()
+        self.assertEqual(out, [{"id": "r1", "subject": "hi", "_fetch_source": "remote_graph"}])
+
+
+class FetchLatestOtpForceDirectTests(unittest.TestCase):
+    def setUp(self):
+        from core import outlook_client
+
+        outlook_client._MS_TOKEN_CACHE.clear()
+        outlook_client._MS_TOKEN_FATAL_CACHE.clear()
+        outlook_client._REMOTE_DISABLED = False
+
+    def test_fetch_latest_otp_passes_force_direct(self):
+        from core import outlook_client
+
+        account = _make_account()
+        with patch("core.outlook_client.get_account_context", return_value=account), patch(
+            "core.outlook_client._http_session", return_value=object()
+        ), patch("core.outlook_client._fetch_via", return_value=[_openai_msg()]) as fetch_via, patch(
+            "core.outlook_client.time.sleep"
+        ), patch("core.outlook_client.time.time", side_effect=_Clock()):
+            otp = outlook_client.fetch_latest_otp(
+                account.email, max_wait=10, poll_interval=1, settle_seconds=0, force_direct=True
+            )
+
+        self.assertEqual(otp, "123456")
+        self.assertEqual(fetch_via.call_count, 2)  # graph + imap
+        for call in fetch_via.call_args_list:
+            self.assertIs(call.kwargs.get("force_direct"), True)
+
+    def test_fetch_latest_otp_default_no_force_direct(self):
+        from core import outlook_client
+
+        account = _make_account()
+        with patch("core.outlook_client.get_account_context", return_value=account), patch(
+            "core.outlook_client._http_session", return_value=object()
+        ), patch("core.outlook_client._fetch_via", return_value=[_openai_msg()]) as fetch_via, patch(
+            "core.outlook_client.time.sleep"
+        ), patch("core.outlook_client.time.time", side_effect=_Clock()):
+            otp = outlook_client.fetch_latest_otp(
+                account.email, max_wait=10, poll_interval=1, settle_seconds=0
+            )
+
+        self.assertEqual(otp, "123456")
+        for call in fetch_via.call_args_list:
+            self.assertIs(call.kwargs.get("force_direct"), False)
+
+
+class ICloudForwardForceDirectTests(unittest.TestCase):
+    def test_forward_target_passes_force_direct(self):
+        from core import icloud_hme_client, outlook_client
+
+        account = _make_account(email="target@outlook.com")
+        with patch.object(
+            icloud_hme_client, "_forward_target_email", return_value="target@outlook.com"
+        ), patch.object(
+            outlook_client, "get_account_context", return_value=account
+        ), patch.object(
+            outlook_client, "fetch_latest_otp", return_value="123456"
+        ) as fake_fetch:
+            otp = icloud_hme_client._fetch_otp_from_forward_target("alias@icloud.com", "acc-1", 0.0)
+
+        self.assertEqual(otp, "123456")
+        fake_fetch.assert_called_once()
+        self.assertIs(fake_fetch.call_args.kwargs.get("force_direct"), True)
 
 
 if __name__ == "__main__":

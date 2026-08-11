@@ -854,15 +854,26 @@ def _fetch_via_graph_direct(account: OutlookAccount) -> list[dict]:
         http.close()
 
 
-def _fetch_via(session: CurlSession, protocol: str, account: OutlookAccount) -> list[dict]:
+def _fetch_via(
+    session: CurlSession, protocol: str, account: OutlookAccount, *, force_direct: bool = False
+) -> list[dict]:
     """
     拉收件箱，返回 emails 列表。
 
+    - force_direct: 跳过远端，强制本地直连（iCloud 转发取码等场景）
     - remote: mail.chatai.codes /api/fetch-graph|imap
     - direct: Microsoft Graph 直连
     - auto: 远端可用时用远端；远端 402/DEPLOYMENT_DISABLED 后自动直连 Graph
     """
     global _REMOTE_DISABLED
+
+    if force_direct:
+        if protocol == "graph":
+            return _fetch_via_graph_direct(account)
+        if protocol == "imap":
+            return _fetch_imap_direct_messages(account)
+        return []
+
     mode = _outlook_fetch_mode()
 
     if mode in ("direct", "graph", "graph_direct", "msgraph"):
@@ -953,6 +964,7 @@ def fetch_latest_otp(
     subject_includes: list[str] | None = None,
     subject_excludes: list[str] | None = None,
     settle_seconds: int | None = None,
+    force_direct: bool = False,
 ) -> str:
     """
     双协议轮询取 OTP，规则：
@@ -968,6 +980,7 @@ def fetch_latest_otp(
         max_wait / poll_interval: 默认走 config 里的值
         subject_includes / subject_excludes: 可选 subject 过滤
         settle_seconds: 抓到第一封后再等多少秒看有没有更新的（默认 8s）
+        force_direct: True 时跳过远端 session，强制本地直连取件
     """
     account = get_account_context(email)
     if account is None:
@@ -996,7 +1009,7 @@ def fetch_latest_otp(
         # 每轮都重新拉，因为可能有新邮件，也可能旧邮件因延迟才出现
         all_candidates: list[tuple[str, dict, float, str]] = []
         for protocol in ("graph", "imap"):
-            emails = _fetch_via(session, protocol, account)
+            emails = _fetch_via(session, protocol, account, force_direct=force_direct)
             for item in emails:
                 ts = _parse_email_ts(item) or 0.0
                 source = str(item.get("_fetch_source") or protocol) if isinstance(item, dict) else protocol
