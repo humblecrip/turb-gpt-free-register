@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core import gptmail_client
@@ -8,6 +10,15 @@ from core import gptmail_client
 class GPTMailClientTests(unittest.TestCase):
     def setUp(self):
         gptmail_client._CONTEXT_CACHE.clear()
+        # 隔离域名池文件：避免 data/gptmail_good_domains.json 存在时 pick_account 走 POST 真实网络
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._orig_pool_file = gptmail_client._DOMAIN_POOL_FILE
+        gptmail_client._DOMAIN_POOL_FILE = Path(self._tmpdir.name) / "gptmail_good_domains.json"
+
+    def tearDown(self):
+        gptmail_client._DOMAIN_POOL_FILE = self._orig_pool_file
+        gptmail_client._CONTEXT_CACHE.clear()
+        self._tmpdir.cleanup()
 
     def test_pick_account_requires_configured_api_key(self):
         with patch.object(gptmail_client._email_cfg, "GPTMAIL_API_KEY", "", create=True):

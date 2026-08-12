@@ -181,8 +181,20 @@ def wait_for_otp(
 
     source = resolve_email_source(email)
     if source == "gptmail":
-        from core.gptmail_client import fetch_latest_otp
-        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+        from core.gptmail_client import fetch_latest_otp, record_register_result
+        try:
+            otp = fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+        except Exception:
+            try:
+                record_register_result(email, False)
+            except Exception:
+                pass
+            raise
+        try:
+            record_register_result(email, True)
+        except Exception:
+            pass
+        return otp
     if source == "cloudflare":
         from core.cf_temp_mail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)

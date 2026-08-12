@@ -34,9 +34,27 @@ class GPTMailProviderTests(unittest.TestCase):
     @patch("core.gptmail_client.fetch_latest_otp", return_value="654321")
     @patch("core.email_provider.resolve_email_source", return_value="gptmail")
     def test_wait_for_otp_uses_gptmail_client(self, resolve, fetch_latest_otp):
-        with patch.object(email_config, "USE_EMAIL_SERVICE", True):
-            self.assertEqual(email_provider.wait_for_otp("fresh@gptmail.test", after_ts=123.0), "654321")
+        with patch("core.gptmail_client.record_register_result") as record_result:
+            with patch.object(email_config, "USE_EMAIL_SERVICE", True):
+                self.assertEqual(email_provider.wait_for_otp("fresh@gptmail.test", after_ts=123.0), "654321")
         fetch_latest_otp.assert_called_once_with("fresh@gptmail.test", after_ts=123.0)
+        record_result.assert_called_once_with("fresh@gptmail.test", True)
+
+    @patch("core.gptmail_client.fetch_latest_otp", side_effect=RuntimeError("timeout"))
+    @patch("core.email_provider.resolve_email_source", return_value="gptmail")
+    def test_wait_for_otp_records_failure_on_gptmail_error(self, resolve, fetch_latest_otp):
+        with patch("core.gptmail_client.record_register_result") as record_result:
+            with patch.object(email_config, "USE_EMAIL_SERVICE", True):
+                with self.assertRaisesRegex(RuntimeError, "timeout"):
+                    email_provider.wait_for_otp("fresh@gptmail.test", after_ts=123.0)
+        record_result.assert_called_once_with("fresh@gptmail.test", False)
+
+    @patch("core.gptmail_client.fetch_latest_otp", return_value="654321")
+    @patch("core.email_provider.resolve_email_source", return_value="gptmail")
+    def test_wait_for_otp_recording_failure_does_not_break_otp(self, resolve, fetch_latest_otp):
+        with patch("core.gptmail_client.record_register_result", side_effect=RuntimeError("boom")):
+            with patch.object(email_config, "USE_EMAIL_SERVICE", True):
+                self.assertEqual(email_provider.wait_for_otp("fresh@gptmail.test", after_ts=123.0), "654321")
 
     @patch("core.mailnest_client.pick_account")
     def test_acquire_email_uses_mailnest_client(self, pick_account):

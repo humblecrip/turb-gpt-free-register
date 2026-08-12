@@ -2,10 +2,14 @@
 """GPTMail 临时邮箱客户端。"""
 from __future__ import annotations
 
+import json
 import logging
+import random
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import requests
 
@@ -16,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://mail.chatgpt.org.uk"
 REQUEST_TIMEOUT = 20
+
+# 域名自学习优先池：{domain: {"score": int, "ok": int, "fail": int, "updated_at": str}}
+_DOMAIN_POOL_FILE = Path(__file__).resolve().parent.parent / "data" / "gptmail_good_domains.json"
+_DOMAIN_POOL_LOCK = threading.Lock()
+# 探索比例：30% 随机生成新域名，70% 用池内高分域名
+_DOMAIN_POOL_EXPLORE_RATE = 0.3
+# 取池内最高分前 N 个候选随机选一，避免单域名过载
+_DOMAIN_POOL_TOP_N = 3
 
 
 class GPTMailError(RuntimeError):
@@ -43,18 +55,7 @@ def _headers() -> dict[str, str]:
     return {"Accept": "application/json", "X-API-Key": api_key}
 
 
-def _get(path: str, params: dict | None = None) -> dict:
-    """调用 GPTMail GET 接口，返回成功响应中的 data 对象。"""
-    try:
-        response = requests.get(
-            BASE_URL + path,
-            headers=_headers(),
-            params=params,
-            timeout=REQUEST_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        raise GPTMailError(f"GPTMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
-
+def _parse_response(response, path: str) -> dict:
     try:
         payload = response.json()
     except ValueError as exc:
@@ -72,9 +73,46 @@ def _get(path: str, params: dict | None = None) -> dict:
     return data
 
 
-def pick_account() -> GPTMailAccount:
-    """生成并缓存一个新的 GPTMail 随机邮箱地址。"""
-    data = _get("/api/generate-email")
+def _get(path: str, params: dict | None = None) -> dict:
+    """调用 GPTMail GET 接口，返回成功响应中的 data 对象。"""
+    try:
+        response = requests.get(
+            BASE_URL + path,
+            headers=_headers(),
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise GPTMailError(f"GPTMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
+    return _parse_response(response, path)
+
+
+def _post(path: str, payload: dict) -> dict:
+    """调用 GPTMail POST 接口，返回成功响应中的 data 对象。"""
+    try:
+        response = requests.post(
+            BASE_URL + path,
+            headers=_headers(),
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise GPTMailError(f"GPTMail 请求失败 ({path}): {type(exc).__name__}: {exc}") from exc
+    return _parse_response(response, path)
+
+
+def _generate_email(domain: str | None = None) -> GPTMailAccount:
+    """生成 GPTMail 邮箱；domain 指定时 POST 指定域名，失败回退随机生成。"""
+    try:
+        if domain:
+            data = _post("/api/generate-email", {"domain": domain})
+        else:
+            data = _get("/api/generate-email")
+    except GPTMailError:
+        if not domain:
+            raise
+        logger.warning("[GPTMail] 指定域名 %s 生成失败，回退随机生成", domain)
+        data = _get("/api/generate-email")
     email = str(data.get("email") or "").strip()
     if not email or "@" not in email:
         raise GPTMailError("GPTMail 生成邮箱响应缺少有效 email")
@@ -82,6 +120,21 @@ def pick_account() -> GPTMailAccount:
     _CONTEXT_CACHE[_cache_key(email)] = account
     logger.info("[GPTMail] 已生成临时邮箱: %s", email)
     return account
+
+
+def pick_account(domain: str | None = None) -> GPTMailAccount:
+    """生成并缓存一个新的 GPTMail 邮箱地址。
+
+    domain 非空时指定域名生成；否则 70% 优先用域名池高分域名、30% 随机生成探索。
+    池空/无正分域名时随机生成兜底。
+    """
+    if domain:
+        return _generate_email(domain)
+    if random.random() >= _DOMAIN_POOL_EXPLORE_RATE:
+        pool_domain = _pick_pool_domain()
+        if pool_domain:
+            return _generate_email(pool_domain)
+    return _generate_email(None)
 
 
 def get_account_context(email: str) -> GPTMailAccount | None:
@@ -93,6 +146,81 @@ def release_account(email: str, status: str = "available", note: str | None = No
     """GPTMail 地址无需入池，任务结束时只清理本进程上下文。"""
     _CONTEXT_CACHE.pop(_cache_key(email), None)
     logger.info("[GPTMail] 已释放临时邮箱: %s（status=%s, note=%s）", email, status, note or "")
+
+
+# ============================================================
+# 域名自学习优先池
+# ============================================================
+
+def _load_domain_pool() -> dict:
+    try:
+        if _DOMAIN_POOL_FILE.exists():
+            data = json.loads(_DOMAIN_POOL_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        logger.warning(f"[GPTMail] 读取域名池失败（忽略）：{exc}")
+    return {}
+
+
+def _save_domain_pool(pool: dict) -> None:
+    try:
+        _DOMAIN_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _DOMAIN_POOL_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_DOMAIN_POOL_FILE)
+    except Exception as exc:
+        logger.warning(f"[GPTMail] 保存域名池失败（不影响主流程）：{exc}")
+
+
+def _domain_of(email: str) -> str:
+    raw = str(email or "").strip().lower()
+    return raw.split("@")[-1] if "@" in raw else ""
+
+
+def record_register_result(email: str, ok: bool) -> None:
+    """记录一次 GPTMail 注册收码结果：成功域名 score+1，失败 score-1（供域名池优先选择）。"""
+    domain = _domain_of(email)
+    if not domain:
+        return
+    with _DOMAIN_POOL_LOCK:
+        pool = _load_domain_pool()
+        entry = pool.get(domain)
+        if not isinstance(entry, dict):
+            entry = pool[domain] = {"score": 0, "ok": 0, "fail": 0, "updated_at": ""}
+        try:
+            score = int(entry.get("score", 0) or 0)
+            ok_count = int(entry.get("ok", 0) or 0)
+            fail_count = int(entry.get("fail", 0) or 0)
+        except (TypeError, ValueError):
+            # 池条目损坏（如 score 为字符串）：重置该条目，避免本次记录失败且保证文件可继续累计
+            logger.warning("[GPTMail] 域名 %s 池条目损坏，已重置", domain)
+            entry = pool[domain] = {"score": 0, "ok": 0, "fail": 0, "updated_at": ""}
+            score = ok_count = fail_count = 0
+        entry["score"] = score + (1 if ok else -1)
+        entry["ok"] = ok_count + (1 if ok else 0)
+        entry["fail"] = fail_count + (0 if ok else 1)
+        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _save_domain_pool(pool)
+
+
+def _pick_pool_domain() -> str | None:
+    """从域名池选一个 score>0 的域名（最高分前 N 名随机，避免单域名过载）。"""
+    pool = _load_domain_pool()
+    candidates: list[tuple[int, str]] = []
+    for domain, entry in pool.items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            score = int(entry.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if score > 0:
+            candidates.append((score, str(domain)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return random.choice(candidates[:_DOMAIN_POOL_TOP_N])[1]
 
 
 def _timestamp(item: dict) -> float | None:
