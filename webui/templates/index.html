@@ -1054,6 +1054,68 @@
     #accountsToolbarV2 .acc-v2-tag-select-item:hover { background: #f5f7fa; }
     #accountsToolbarV2 .acc-v2-tag-select-item input { margin: 0; }
 
+    /* ---- 账号工具栏「更多」下拉（收纳次要按钮） ---- */
+    #accountsToolbarV2 .acc-v2-more-select {
+      position: relative; display: inline-flex; vertical-align: middle; flex: 0 0 auto;
+    }
+    #accountsToolbarV2 .acc-v2-more-btn {
+      min-height: 32px; padding: 0 30px 0 12px; font-size: 13px;
+      border: 1px solid #dcdfe6; border-radius: 6px; background: #fff; color: #606266;
+      font: inherit; cursor: pointer; line-height: 1; display: inline-flex;
+      align-items: center; justify-content: flex-start; white-space: nowrap;
+      box-sizing: border-box; position: relative; text-align: left;
+    }
+    #accountsToolbarV2 .acc-v2-more-btn:hover,
+    #accountsToolbarV2 .acc-v2-more-select.open .acc-v2-more-btn {
+      border-color: #377DFF; color: #377DFF; background: #ecf5ff;
+    }
+    #accountsToolbarV2 .acc-v2-more-btn::after {
+      content: ""; position: absolute; right: 12px; top: 50%;
+      width: 0; height: 0; margin-top: -2px;
+      border-left: 5px solid transparent; border-right: 5px solid transparent;
+      border-top: 6px solid #909399;
+    }
+    #accountsToolbarV2 .acc-v2-more-select.open .acc-v2-more-btn::after {
+      margin-top: -4px; border-top: none; border-bottom: 6px solid #909399;
+    }
+    #accountsToolbarV2 .acc-v2-more-menu {
+      display: none; position: absolute; left: auto; right: 0; top: calc(100% + 6px);
+      min-width: 230px; max-height: 360px; overflow-y: auto; padding: 6px; z-index: 40;
+      border-radius: 8px; background: #fff;
+      box-shadow: 0 8px 24px rgba(15,23,42,.12), 0 0 0 1px rgba(15,23,42,.04);
+      box-sizing: border-box;
+    }
+    #accountsToolbarV2 .acc-v2-more-select.open .acc-v2-more-menu { display: block; }
+    #accountsToolbarV2 .acc-v2-more-menu .acc-v2-more-group-title {
+      display: block; padding: 8px 10px 4px; color: #909399;
+      font-size: 12px; font-weight: 600; white-space: nowrap;
+    }
+    #accountsToolbarV2 .acc-v2-more-menu .jobs-tb-btn,
+    #accountsToolbarV2 .acc-v2-more-menu .acc-v2-toggle,
+    #accountsToolbarV2 .acc-v2-more-menu .acc-v2-date-select-btn {
+      width: 100%; min-height: 30px; margin: 0; padding: 0 10px;
+      border: none; border-radius: 6px; background: transparent;
+      color: #606266; font: inherit; font-size: 13px; line-height: 1.4;
+      display: flex; align-items: center; justify-content: flex-start;
+      box-sizing: border-box; white-space: nowrap; text-align: left; cursor: pointer;
+    }
+    #accountsToolbarV2 .acc-v2-more-menu .jobs-tb-btn:hover:not(:disabled),
+    #accountsToolbarV2 .acc-v2-more-menu .acc-v2-date-select-btn:hover {
+      background: #f5f7fa; color: #377DFF;
+    }
+    #accountsToolbarV2 .acc-v2-more-menu .jobs-tb-btn:disabled {
+      opacity: .5; cursor: not-allowed; background: transparent; color: #c0c4cc;
+    }
+    #accountsToolbarV2 .acc-v2-more-menu .acc-v2-toggle.is-active {
+      background: #EBF2FF; color: #377DFF; font-weight: 500;
+    }
+    #accountsToolbarV2 .acc-v2-more-menu .acc-v2-date-select {
+      width: 100%; display: block;
+    }
+    #accountsToolbarV2 .acc-v2-more-menu .acc-v2-date-select-menu {
+      position: fixed; z-index: 300; min-width: 300px;
+    }
+
     /* ---- Codex 授权 ---- */
     .codex-stats-v2 {
       display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2183,19 +2245,14 @@
             </span>
           </label>
           <button type="button" class="acc-v2-toggle" id="showArchivedAccountsV2" aria-pressed="false" title="默认只显示未归档账号；开启后单独查看归档账号">查看归档</button>
-          <button type="button" class="acc-v2-toggle" id="showPlusAccountsOnlyV2" aria-pressed="false" title="只查询/显示已开通 Plus 的账号">已开通Plus</button>
-          <div class="acc-v2-date-select" id="dateSelectAccountsV2">
-            <button type="button" class="acc-v2-date-select-btn" id="btnDateFilterAccountsV2" title="按注册时间筛选日期范围">📅 日期筛选</button>
-            <div class="acc-v2-date-select-menu" id="dateFilterPanelAccountsV2"></div>
-          </div>
-          <div class="hidden">
-            <input type="date" id="dateFromAccountsV2">
-            <input type="date" id="dateToAccountsV2">
-          </div>
           <button type="button" class="jobs-tb-btn" id="btnRefreshAccountsV2" title="重新加载当前筛选条件和当前页账号列表">刷新账号</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveTopV2" onclick="checkSelectedLive()" title="重新登录选中账号;成功且未封号则标记正常,并刷新最新 AT/accessToken">查活</button>
           <button type="button" class="jobs-tb-btn" id="btnVerdictSelectedV2" onclick="checkVerdict(Array.from(ACCOUNT_SELECTED))" disabled title="对选中账号读邮箱邮件判断封号/RT过期">判定</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnReauthRtExpiredV2" onclick="reauthRtExpired()" disabled title="对选中账号中判定为 RT 过期的,自动重上号(补跑 Codex)">重上RT过期号</button>
+          <div class="hidden">
+            <input type="date" id="dateFromAccountsV2">
+            <input type="date" id="dateToAccountsV2">
+          </div>
 
         </div>
 
@@ -2206,12 +2263,6 @@
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
         </div>
         <div class="acc-v2-btn-group">
-          <span class="acc-v2-btn-group-title">Agent</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnGenerateSelectedAgentV2" disabled title="给选中的已注册账号批量生成 Codex Agent Token">生成</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedAgentV2" disabled title="下载选中账号已生成的 Codex Agent Token，打包 ZIP">下载</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnUploadSelectedAgentSub2V2" disabled title="把选中账号已生成的 Codex Agent Token 上传到 sub2api">上传sub2</button>
-        </div>
-        <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">Codex</span>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补跑</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载CPA</button>
@@ -2219,10 +2270,6 @@
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">批量</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnNoteSelectedAccountsV2" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载TXT</button>
           <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除</button>
           <div class="acc-v2-tag-select" id="batchTagSelectV2">
@@ -2235,6 +2282,28 @@
           <span class="acc-v2-btn-group-title">全部</span>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCopyAllTokensV2" title="复制当前页所有 Token，每个账号一行">复制Token</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopyAllLinesV2" title="复制当前页所有账号整行，每个账号一行">复制整行</button>
+        </div>
+        <div class="acc-v2-btn-group">
+          <div class="acc-v2-more-select" id="accountsMoreV2">
+            <button type="button" class="acc-v2-more-btn" id="btnAccountsMoreV2" aria-haspopup="menu" aria-expanded="false" title="收纳次要操作：Agent Token/sub2、备注、复制邮箱、下载TXT、Plus/日期筛选">更多</button>
+            <div class="acc-v2-more-menu" id="accountsMoreMenuV2" role="menu">
+              <span class="acc-v2-more-group-title">Agent</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnGenerateSelectedAgentV2" disabled title="给选中的已注册账号批量生成 Codex Agent Token">生成</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedAgentV2" disabled title="下载选中账号已生成的 Codex Agent Token，打包 ZIP">下载</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnUploadSelectedAgentSub2V2" disabled title="把选中账号已生成的 Codex Agent Token 上传到 sub2api">上传sub2</button>
+              <span class="acc-v2-more-group-title">批量</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnNoteSelectedAccountsV2" disabled title="给选中的账号统一设置备注，留空可清空备注">备注</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLinesV2" disabled title="复制选中账号的完整整行，每个账号一行">复制行</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedEmailsV2" disabled title="复制选中账号的邮箱，每个账号一行">复制邮箱</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedTxtV2" disabled title="把选中账号的完整整行保存为 TXT 文件，每个账号一行">下载TXT</button>
+              <span class="acc-v2-more-group-title">筛选</span>
+              <button type="button" class="acc-v2-toggle" id="showPlusAccountsOnlyV2" aria-pressed="false" title="只查询/显示已开通 Plus 的账号">已开通Plus</button>
+              <div class="acc-v2-date-select" id="dateSelectAccountsV2">
+                <button type="button" class="acc-v2-date-select-btn" id="btnDateFilterAccountsV2" title="按注册时间筛选日期范围">📅 日期筛选</button>
+                <div class="acc-v2-date-select-menu" id="dateFilterPanelAccountsV2"></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="accounts-table-v2-wrap">
@@ -4812,6 +4881,46 @@ async function copySelectedAccountTokens() {
   bind('btnBatchDeleteByTagsV2', batchDeleteByTags);
   initBatchTagSelectV2();
 })();
+
+// ---------- 账号工具栏「更多」下拉 ----------
+function initAccountsMoreV2() {
+  const wrap = document.getElementById('accountsMoreV2');
+  const btn = document.getElementById('btnAccountsMoreV2');
+  const menu = document.getElementById('accountsMoreMenuV2');
+  if (!wrap || !btn || !menu || wrap.dataset.bound) return;
+  wrap.dataset.bound = '1';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = !wrap.classList.contains('open');
+    wrap.classList.toggle('open', willOpen);
+    btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  });
+  menu.addEventListener('click', (e) => {
+    // 日期筛选面板内交互不收起；点击其他菜单项后收起
+    if (e.target.closest('.acc-v2-date-select')) return;
+    wrap.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  });
+  document.addEventListener('click', (e) => {
+    if (wrap.contains(e.target)) return;
+    wrap.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  });
+  // 更多菜单内的日期筛选：打开时改为 fixed 定位到按钮下方，避免被菜单裁切
+  const dateSelect = menu.querySelector('.acc-v2-date-select');
+  const dateBtn = menu.querySelector('.acc-v2-date-select-btn');
+  const panel = menu.querySelector('.acc-v2-date-select-menu');
+  if (dateSelect && dateBtn && panel) {
+    dateBtn.addEventListener('click', () => {
+      const r = dateBtn.getBoundingClientRect();
+      const panelH = panel.offsetHeight || 320;
+      panel.style.position = 'fixed';
+      panel.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 316))}px`;
+      panel.style.top = `${Math.min(r.bottom + 6, Math.max(8, window.innerHeight - panelH - 8))}px`;
+    });
+  }
+}
+initAccountsMoreV2();
 
 // ---------- 邮箱池 ----------
 function getPoolSource() {
