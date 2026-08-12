@@ -1743,6 +1743,126 @@
       opacity: .7; cursor: not-allowed;
     }
 
+    /* ---- 账号池 ↔ CPA 对齐弹窗 ---- */
+    #cpaAlignModal:not(.hidden) {
+      position: fixed; inset: 0; z-index: 1200;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px; box-sizing: border-box;
+      background: rgba(15, 23, 42, .45);
+    }
+    .cpa-align-dialog {
+      width: min(760px, 100%); max-height: min(860px, calc(100vh - 48px));
+      display: flex; flex-direction: column;
+      background: #fff; border-radius: 12px; border: 1px solid #ebeef5;
+      box-shadow: 0 24px 70px rgba(15,23,42,.28); overflow: hidden;
+    }
+    .cpa-align-head {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 20px 20px 14px; border-bottom: 1px solid #ebeef5;
+    }
+    .cpa-align-head-main { min-width: 0; flex: 1; }
+    .cpa-align-head h3 {
+      margin: 0; font-size: 18px; font-weight: 700; color: #303133; line-height: 1.3;
+    }
+    .cpa-align-head p {
+      margin: 8px 0 0; font-size: 12px; line-height: 1.55; color: #909399;
+    }
+    .cpa-align-close {
+      width: 32px; height: 32px; flex-shrink: 0; margin: -4px -4px 0 0;
+      border: none; border-radius: 6px; background: transparent;
+      color: #909399; font-size: 20px; line-height: 1; cursor: pointer;
+    }
+    .cpa-align-close:hover { background: #f5f7fa; color: #606266; }
+    .cpa-align-body {
+      padding: 18px 20px; overflow: auto; display: grid; gap: 12px;
+    }
+    .cpa-align-summary {
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .cpa-align-stat {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 5px 10px; border-radius: 999px;
+      background: #f5f7fa; border: 1px solid #ebeef5;
+      font-size: 12px; color: #606266; white-space: nowrap;
+    }
+    .cpa-align-stat b { font-weight: 700; color: #303133; }
+    .cpa-align-stat.is-valid { background: #E7FCF8; border-color: #9ee0d6; color: #2bb8a6; }
+    .cpa-align-stat.is-valid b { color: #2bb8a6; }
+    .cpa-align-stat.is-dead { background: #fef0f0; border-color: #fbc4c4; color: #f56c6c; }
+    .cpa-align-stat.is-dead b { color: #f56c6c; }
+    .cpa-align-stat.is-missing { background: #fff7e6; border-color: #ffd591; color: #fa8c16; }
+    .cpa-align-stat.is-missing b { color: #fa8c16; }
+    .cpa-align-stat.is-only { background: #fafafa; border-color: #ebebef; color: #909399; }
+    .cpa-align-stat.is-only b { color: #909399; }
+    .cpa-align-list {
+      display: grid; gap: 6px;
+      max-height: min(520px, 55vh); overflow: auto;
+      border: 1px solid #ebeef5; border-radius: 8px; padding: 8px;
+    }
+    .cpa-align-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 10px; border-radius: 6px;
+      background: #fafbfc; border: 1px solid #f0f2f5;
+      font-size: 13px; line-height: 1.4;
+    }
+    .cpa-align-email {
+      flex-shrink: 0; min-width: 0; max-width: 46%;
+      font-weight: 600; color: #303133;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cpa-align-note {
+      flex: 1; min-width: 0; color: #909399; font-size: 12px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cpa-align-fname {
+      flex-shrink: 1; min-width: 0; color: #c0c4cc; font-size: 12px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cpa-align-only-title {
+      margin-top: 4px; padding: 2px 2px 0; font-size: 12px; font-weight: 600; color: #909399;
+    }
+    .cpa-align-body .pill.cpa-align-pill {
+      display: inline-flex; align-items: center; justify-content: center;
+      flex-shrink: 0; height: 24px; padding: 0 10px; border-radius: 4px;
+      border: 1px solid transparent; box-sizing: border-box;
+      font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap;
+    }
+    .cpa-align-body .pill.cpa-align-pill.is-valid {
+      color: #2bb8a6; background: #E7FCF8; border-color: #9ee0d6;
+    }
+    .cpa-align-body .pill.cpa-align-pill.is-dead {
+      color: #f56c6c; background: #fef0f0; border-color: #fbc4c4;
+    }
+    .cpa-align-body .pill.cpa-align-pill.is-missing {
+      color: #fa8c16; background: #fff7e6; border-color: #ffd591;
+    }
+    .cpa-align-body .pill.cpa-align-pill.is-only {
+      color: #909399; background: #fafafa; border-color: #ebebef;
+    }
+    .cpa-align-foot {
+      display: flex; justify-content: flex-end; gap: 10px;
+      padding: 14px 20px 18px; border-top: 1px solid #ebeef5; background: #fafbfc;
+    }
+    .cpa-align-foot .jobs-tb-btn {
+      min-height: 40px; padding: 8px 18px; font-size: 14px;
+      border: 1px solid #dcdfe6; border-radius: 6px;
+      background: #fff; color: #606266; cursor: pointer;
+      display: inline-flex; align-items: center; white-space: nowrap;
+      font: inherit; line-height: 1; box-sizing: border-box;
+    }
+    .cpa-align-foot .jobs-tb-btn:hover:not(:disabled) {
+      color: #409eff; border-color: #c6e2ff; background: #ecf5ff;
+    }
+    .cpa-align-foot .jobs-tb-btn--primary {
+      color: #fff; background: #377DFF; border-color: #377DFF;
+    }
+    .cpa-align-foot .jobs-tb-btn--primary:hover:not(:disabled) {
+      background: #5a94ff; border-color: #5a94ff; color: #fff;
+    }
+    .cpa-align-foot .jobs-tb-btn:disabled {
+      opacity: .7; cursor: not-allowed;
+    }
+
 
     /* ---- 新版配置布局（追加在概览下方） ---- */
     .config-layout-v2 {
@@ -2033,6 +2153,98 @@
       .config-overview-v2-title { font-size: 24px; }
     }
 
+    /* ================= iCloud 工作流 ================= */
+    .icloud-wf-config {
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      padding: 16px; border: 1px solid #ebeef5; border-radius: 10px;
+      background: #fff; margin-bottom: 14px;
+    }
+    .icloud-wf-config .jobs-tb-field {
+      display: inline-flex; align-items: center; gap: 8px;
+      color: #606266; font-size: 14px; white-space: nowrap;
+    }
+    .icloud-wf-config select {
+      height: 40px; padding: 0 10px; border: 1px solid #dcdfe6;
+      border-radius: 6px; background: #fff; color: #606266;
+      font: inherit; font-size: 14px; box-sizing: border-box;
+    }
+    .icloud-wf-config select:hover, .icloud-wf-config select:focus {
+      border-color: #409eff; outline: none;
+    }
+    .icloud-wf-check {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: #606266; font-size: 14px; white-space: nowrap; cursor: pointer;
+    }
+    .icloud-wf-pool {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+    }
+    .icloud-wf-pool-card {
+      flex: 1 1 150px; padding: 12px 14px; border: 1px solid #ebeef5;
+      border-radius: 10px; background: #fff; text-align: center;
+    }
+    .icloud-wf-pool-card .pval {
+      font-size: 22px; font-weight: 600; color: #303133;
+      margin-top: 4px; line-height: 1.2;
+    }
+    .icloud-wf-pool-card .plabel {
+      font-size: 12px; color: #909399;
+    }
+    .icloud-wf-banner { margin-bottom: 12px; }
+    .icloud-wf-jobs {
+      display: flex; flex-direction: column; gap: 12px;
+      border: 1px solid #ebeef5; border-radius: 10px; background: #fff;
+      padding: 14px; max-height: 60vh; overflow-y: auto;
+    }
+    .icloud-wf-job {
+      border: 1px solid #ebeef5; border-radius: 8px; padding: 10px 12px;
+      background: #fafbfc;
+    }
+    .icloud-wf-job-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .icloud-wf-job-head .jid { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #909399; }
+    .icloud-wf-job-head .jemail { font-size: 13px; color: #303133; flex: 1; min-width: 120px; overflow-wrap: anywhere; }
+    .icloud-wf-job-head .jerr { font-size: 12px; color: #e64545; flex-basis: 100%; overflow-wrap: anywhere; }
+    .icloud-wf-steps {
+      display: flex; align-items: center; gap: 0; margin: 8px 0;
+    }
+    .icloud-wf-step {
+      display: flex; align-items: center; gap: 6px; flex: 1;
+      font-size: 12px; color: #909399; white-space: nowrap;
+    }
+    .icloud-wf-step .dot {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #e4e7ed; color: #fff; font-size: 11px;
+      display: inline-flex; align-items: center; justify-content: center;
+      flex: 0 0 18px;
+    }
+    .icloud-wf-step.done .dot { background: #2f855a; }
+    .icloud-wf-step.current .dot { background: #377DFF; }
+    .icloud-wf-step.current { color: #377DFF; font-weight: 600; }
+    .icloud-wf-step .bar {
+      flex: 1; height: 3px; background: #e4e7ed; border-radius: 2px; min-width: 8px;
+    }
+    .icloud-wf-step.done .bar { background: #2f855a; }
+    .icloud-wf-step:last-child .bar { display: none; }
+    .icloud-wf-logs {
+      margin-top: 6px; max-height: 120px; overflow-y: auto;
+      background: #f4f6f8; border-radius: 6px; padding: 6px 8px;
+      font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+      line-height: 1.5; color: #606266;
+    }
+    .icloud-wf-logs .lw { color: #e6a23c; }
+    .icloud-wf-logs .le { color: #e64545; }
+    .icloud-wf-logs:empty { display: none; }
+    .icloud-wf-pill {
+      display: inline-flex; align-items: center; padding: 2px 10px;
+      border-radius: 999px; font-size: 12px; white-space: nowrap;
+    }
+    .icloud-wf-pill--queued { background: #f0f2f5; color: #606266; }
+    .icloud-wf-pill--running { background: #ecf5ff; color: #409eff; }
+    .icloud-wf-pill--done { background: #edf8f1; color: #166534; }
+    .icloud-wf-pill--failed { background: #fff0f0; color: #e64545; }
+    .icloud-wf-pill--stopped, .icloud-wf-pill--paused { background: #fff7e6; color: #fa8c16; }
   </style>
 </head>
 <body>
@@ -2074,6 +2286,12 @@
         <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/>
       </svg>
       <span class="sidebar-item-label">邮箱池</span>
+    </button>
+    <button type="button" data-tab="icloud" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 0 0-11.35 1.4A3.5 3.5 0 0 0 7 19h10.5z"/><path d="M12 13v6"/><path d="M9 16l3 3 3-3"/>
+      </svg>
+      <span class="sidebar-item-label">iCloud 工作流</span>
     </button>
     <button type="button" data-tab="config" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2266,6 +2484,7 @@
           <span class="acc-v2-btn-group-title">Codex</span>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补跑</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载CPA</button>
+          <button type="button" class="jobs-tb-btn" id="btnCpaAlignV2" title="对比本地账号池与 CPA auth-files：有效/失效/未上CPA/仅CPA（含实际 401 探测）">CPA对齐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止</button>
         </div>
         <div class="acc-v2-btn-group">
@@ -2485,6 +2704,89 @@
     </section>
   </div>
 
+  <!-- ============ iCloud 工作流 ============ -->
+  <div id="tab-icloud" class="hidden">
+    <h1 class="register-title">iCloud 工作流</h1>
+    <p class="register-sub" style="color:#909399;font-size:13px;margin:-4px 0 12px;">全自动：领 iCloud 别名 → 注册 → 接码 → Codex 补跑 → 自动上传 CPA。注册数量按 icloud-hme 别名池可用量配置。</p>
+
+    <!-- 配置区 -->
+    <section class="icloud-wf-config" aria-label="iCloud 工作流配置">
+      <label class="jobs-tb-field">注册数量
+        <span class="el-input-number">
+          <input id="iwfCount" type="number" min="1" max="200" value="1" inputmode="numeric">
+          <button type="button" class="el-input-number__increase" data-step-for="iwfCount" data-step="1" aria-label="增加">
+            <svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg>
+          </button>
+          <button type="button" class="el-input-number__decrease" data-step-for="iwfCount" data-step="-1" aria-label="减少">
+            <svg viewBox="0 0 24 24"><polyline points="6 10 12 16 18 10"/></svg>
+          </button>
+        </span>
+      </label>
+      <label class="jobs-tb-field">接码国家
+        <select id="iwfCountry" title="接码国家（哥伦比亚/巴西等常用；protocol/roxy 驱动使用内置国家队列，此值主要影响 browser_use 驱动与 sms_provider 默认）">
+          <option value="">默认（配置 SMS_COUNTRY）</option>
+          <option value="33">哥伦比亚 (33)</option>
+          <option value="73">巴西 (73)</option>
+          <option value="54">墨西哥 (54)</option>
+          <option value="76">安哥拉 (76)</option>
+          <option value="57">哥伦比亚备用 (57)</option>
+          <option value="6">巴西备用 (6)</option>
+        </select>
+      </label>
+      <label class="jobs-tb-field">并发
+        <span class="el-input-number">
+          <input id="iwfWorkers" type="number" min="1" max="16" value="1" inputmode="numeric">
+          <button type="button" class="el-input-number__increase" data-step-for="iwfWorkers" data-step="1" aria-label="增加">
+            <svg viewBox="0 0 24 24"><polyline points="6 14 12 8 18 14"/></svg>
+          </button>
+          <button type="button" class="el-input-number__decrease" data-step-for="iwfWorkers" data-step="-1" aria-label="减少">
+            <svg viewBox="0 0 24 24"><polyline points="6 10 12 16 18 10"/></svg>
+          </button>
+        </span>
+      </label>
+      <label class="icloud-wf-check">
+        <input id="iwfAutoUpload" type="checkbox" checked>
+        <span>自动上传 CPA</span>
+      </label>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="iwfStartBtn">开始</button>
+      <button type="button" class="jobs-tb-btn" id="iwfPauseBtn" disabled>暂停</button>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="iwfResumeBtn" disabled>继续</button>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="iwfStopBtn" disabled>停止</button>
+      <button type="button" class="jobs-tb-btn" id="iwfRefreshBtn" title="刷新状态与别名池">刷新</button>
+    </section>
+    <div id="iwfBanner" class="icloud-wf-banner"></div>
+
+    <!-- 别名池状态卡片 -->
+    <section class="icloud-wf-pool" aria-label="别名池状态">
+      <div class="icloud-wf-pool-card">
+        <div class="plabel">icloud-hme 账号数</div>
+        <div class="pval" id="iwfPoolAccounts">-</div>
+      </div>
+      <div class="icloud-wf-pool-card">
+        <div class="plabel">总别名数</div>
+        <div class="pval" id="iwfPoolTotal">-</div>
+      </div>
+      <div class="icloud-wf-pool-card">
+        <div class="plabel">今天已创建</div>
+        <div class="pval" id="iwfPoolToday">-</div>
+      </div>
+      <div class="icloud-wf-pool-card">
+        <div class="plabel">剩余可用</div>
+        <div class="pval" id="iwfPoolRemaining">-</div>
+      </div>
+    </section>
+
+    <!-- 进度区 -->
+    <section class="jobs-panel-v2" aria-label="工作流进度">
+      <div class="jobs-toolbar-v2">
+        <span style="color:#909399;font-size:13px;">批次：<span id="iwfBatchId" class="mono">-</span></span>
+        <span style="color:#909399;font-size:13px;">状态：<span id="iwfRunState">未开始</span></span>
+        <span style="margin-left:auto;color:#909399;font-size:13px;">每个号一个步骤条，2.5s 自动刷新</span>
+      </div>
+      <div class="icloud-wf-jobs" id="iwfJobs"></div>
+    </section>
+  </div>
+
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
     <div class="config-overview-v2" id="configOverviewV2" aria-label="配置概览">
@@ -2568,6 +2870,25 @@
     <div class="outlook-import-foot">
       <button type="button" class="jobs-tb-btn" id="btnCancelOutlookImport">取消</button>
       <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitOutlookImport">导入</button>
+    </div>
+  </div>
+</div>
+<div id="cpaAlignModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="cpaAlignTitle">
+  <div class="cpa-align-dialog" role="document">
+    <div class="cpa-align-head">
+      <div class="cpa-align-head-main">
+        <h3 id="cpaAlignTitle">账号池 ↔ CPA 对齐</h3>
+        <p>以邮箱匹配本地账号池与 CPA auth-files；有效性 = CPA 元数据 + 实际 401 探测（并发 4，每个 CPA-active 号多一次 OpenAI 请求）。</p>
+      </div>
+      <button type="button" class="cpa-align-close" id="btnCloseCpaAlign" aria-label="关闭">×</button>
+    </div>
+    <div class="cpa-align-body">
+      <div class="cpa-align-summary" id="cpaAlignSummary"></div>
+      <div class="cpa-align-list" id="cpaAlignList"></div>
+    </div>
+    <div class="cpa-align-foot">
+      <button type="button" class="jobs-tb-btn" id="btnCancelCpaAlign">关闭</button>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshCpaAlign">刷新</button>
     </div>
   </div>
 </div>
@@ -2790,7 +3111,7 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','config'];
+  const allowed = ['register','accounts','codex','outlook','icloud','config'];
   if (!allowed.includes(tab)) tab = 'register';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
@@ -2800,6 +3121,7 @@ function activateTab(tab, persist=true) {
   if (tab === 'outlook') loadOutlook();
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
+  if (tab === 'icloud') loadIcloudWorkflow();
 }
 $$('nav button').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
 
@@ -2940,6 +3262,13 @@ function bindJobsBodyEvents(bodyEl) {
       stepInputNumber(btn.dataset.stepFor, parseInt(btn.dataset.step, 10) || 0);
     });
   });
+  // iCloud 工作流页的数字步进按钮（独立作用域，避免与上面容器重复绑定）
+  document.querySelectorAll('#tab-icloud [data-step-for]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      stepInputNumber(btn.dataset.stepFor, parseInt(btn.dataset.step, 10) || 0);
+    });
+  });
   const selectAllV2 = $('#jobsSelectAllV2');
   if (selectAllV2) selectAllV2.addEventListener('change', (e) => syncJobsSelectAll(e.target.checked));
   bindJobsBodyEvents($('#jobsBodyV2'));
@@ -3027,7 +3356,8 @@ function updateModalScrollLock() {
     || !$('#retryLogPanel').classList.contains('hidden')
     || !$('#liveLogPanel').classList.contains('hidden')
     || !$('#qrPanel').classList.contains('hidden')
-    || !$('#outlookImportModal').classList.contains('hidden');
+    || !$('#outlookImportModal').classList.contains('hidden')
+    || !$('#cpaAlignModal').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
     modalScrollY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -4869,6 +5199,7 @@ async function copySelectedAccountTokens() {
   bind('btnUploadSelectedAgentSub2V2', uploadSelectedCodexAgentSub2);
   bind('btnRetrySelectedCodexV2', retrySelectedCodex);
   bind('btnDownloadSelectedCpaV2', downloadSelectedCpa);
+  bind('btnCpaAlignV2', openCpaAlign);
   bind('btnStopSelectedCodexV2', stopSelectedCodex);
   bind('btnNoteSelectedAccountsV2', noteSelectedAccounts);
   bind('btnCopySelectedLinesV2', copySelectedAccountLines);
@@ -4880,6 +5211,7 @@ async function copySelectedAccountTokens() {
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
   bind('btnBatchDeleteByTagsV2', batchDeleteByTags);
   initBatchTagSelectV2();
+  bindCpaAlignModal();
 })();
 
 // ---------- 账号工具栏「更多」下拉 ----------
@@ -5476,6 +5808,105 @@ function _pollCpaReauthStatus() {
       }
     } catch(e) { /* 忽略轮询瞬时错误 */ }
   }, 5000);
+}
+
+// ---------- 账号池 ↔ CPA 对齐 ----------
+let CPA_ALIGN = null;
+function openCpaAlign() {
+  const modal = $('#cpaAlignModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  updateModalScrollLock();
+  runCpaAlign();
+}
+function closeCpaAlign() {
+  const modal = $('#cpaAlignModal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  updateModalScrollLock();
+}
+function bindCpaAlignModal() {
+  const modal = $('#cpaAlignModal');
+  if (!modal || modal.dataset.bound) return;
+  modal.dataset.bound = '1';
+  const closeBtn = $('#btnCloseCpaAlign');
+  const cancelBtn = $('#btnCancelCpaAlign');
+  const refreshBtn = $('#btnRefreshCpaAlign');
+  if (closeBtn) closeBtn.addEventListener('click', closeCpaAlign);
+  if (cancelBtn) cancelBtn.addEventListener('click', closeCpaAlign);
+  if (refreshBtn) refreshBtn.addEventListener('click', runCpaAlign);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeCpaAlign();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeCpaAlign();
+  });
+}
+async function runCpaAlign() {
+  const btn = $('#btnCpaAlignV2');
+  const refreshBtn = $('#btnRefreshCpaAlign');
+  const list = $('#cpaAlignList');
+  const summary = $('#cpaAlignSummary');
+  if (btn) { btn.disabled = true; btn.textContent = '对齐中…'; }
+  if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = '探测中…'; }
+  if (summary) summary.innerHTML = '';
+  if (list) list.innerHTML = '<div class="jobs-v2-empty">正在对比账号池与 CPA auth-files（含实际 401 探测，约需数秒）…</div>';
+  try {
+    const r = await api('/api/cpa/pool-align?probe_workers=4');
+    CPA_ALIGN = r;
+    renderCpaAlign();
+    showToast(`对齐完成：有效 ${r.summary && r.summary.cpa_valid || 0}，失效 ${r.summary && r.summary.cpa_dead || 0}`);
+  } catch(err) {
+    if (list) list.innerHTML = `<div class="jobs-v2-empty">对齐失败：${esc(err.message)}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'CPA对齐'; }
+    if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '刷新'; }
+  }
+}
+function _cpaAlignBadge(a) {
+  if (!a.in_cpa) return `<span class="pill cpa-align-pill is-missing" title="本地账号池有，但 CPA auth-files 中没有该邮箱的 codex 凭证">未上CPA</span>`;
+  if (a.cpa_valid) return `<span class="pill cpa-align-pill is-valid" title="CPA 元数据正常且实际探测非 401">有效</span>`;
+  const why = a.dead_by === '401' ? '实际请求 OpenAI 返回 401' : 'CPA 元数据失效（disabled/error/unavailable/高失败）';
+  return `<span class="pill cpa-align-pill is-dead" title="${esc(why)}">失效</span>`;
+}
+function renderCpaAlign() {
+  const list = $('#cpaAlignList');
+  const summary = $('#cpaAlignSummary');
+  if (!CPA_ALIGN || !CPA_ALIGN.ok) {
+    if (list) list.innerHTML = '<div class="jobs-v2-empty">无数据</div>';
+    return;
+  }
+  const s = CPA_ALIGN.summary || {};
+  if (summary) {
+    summary.innerHTML = [
+      `<span class="cpa-align-stat">账号池 <b>${s.pool_total || 0}</b></span>`,
+      `<span class="cpa-align-stat">在CPA <b>${s.in_cpa || 0}</b></span>`,
+      `<span class="cpa-align-stat is-valid">CPA有效 <b>${s.cpa_valid || 0}</b></span>`,
+      `<span class="cpa-align-stat is-dead">CPA失效 <b>${s.cpa_dead || 0}</b></span>`,
+      `<span class="cpa-align-stat is-missing">未上CPA <b>${s.not_in_cpa || 0}</b></span>`,
+      `<span class="cpa-align-stat is-only">仅CPA <b>${s.cpa_only || 0}</b></span>`,
+    ].join('');
+  }
+  const rows = (CPA_ALIGN.accounts || []).map(a => {
+    const note = a.note ? `<span class="cpa-align-note" title="${esc(a.note)}">${esc(a.note)}</span>` : '';
+    const fname = a.cpa_name ? `<span class="cpa-align-fname" title="${esc(a.cpa_name)}">${esc(a.cpa_name)}</span>` : '';
+    return `<div class="cpa-align-row">
+      <span class="cpa-align-email" title="${esc(a.email)}">${esc(a.email)}</span>
+      ${_cpaAlignBadge(a)}
+      ${note}${fname}
+    </div>`;
+  }).join('');
+  const onlyRows = (CPA_ALIGN.cpa_only || []).map(o => `<div class="cpa-align-row">
+    <span class="cpa-align-email" title="${esc(o.email || o.name)}">${esc(o.email || o.name)}</span>
+    <span class="pill cpa-align-pill is-only" title="CPA 有该凭证，但本地账号池没有">仅CPA</span>
+    <span class="cpa-align-note" title="${esc(o.status || '')}">${esc(o.status || '')}</span>
+    <span class="cpa-align-fname" title="${esc(o.name)}">${esc(o.name)}</span>
+  </div>`).join('');
+  const extra = onlyRows ? `<div class="cpa-align-only-title">仅 CPA（账号池无）</div>${onlyRows}` : '';
+  if (list) {
+    list.innerHTML = rows || '<div class="jobs-v2-empty">账号池为空</div>';
+    if (extra) list.insertAdjacentHTML('beforeend', extra);
+  }
 }
 function positionCodexV2MoreMenu(wrap) {
   const btn = wrap.querySelector('.acc-v2-more-btn');
@@ -6656,6 +7087,152 @@ $('#tab-config').addEventListener('click', (e) => {
   saveConfigUpdates(btn);
 });
 
+// ---------- iCloud 工作流 ----------
+let IWF = null;
+const IWF_STEP_LABELS = ['领别名', '注册', '接码', '补跑', '上传CPA'];
+const IWF_STATUS_TEXT = {
+  queued: '排队中', running: '运行中', paused: '已暂停',
+  stopped: '已停止', done: '完成', failed: '失败',
+};
+
+function iwfPill(status) {
+  const cls = 'icloud-wf-pill icloud-wf-pill--' + (status || 'queued');
+  return `<span class="${cls}">${esc(IWF_STATUS_TEXT[status] || status || '未知')}</span>`;
+}
+
+function iwfStepBar(job) {
+  const step = Math.min(Math.max(job.step || 0, 0), IWF_STEP_LABELS.length - 1);
+  // done 表示整条链路全部完成，显示全勾；running 高亮当前步骤；失败/停止显示到失败位置
+  const allDone = job.status === 'done';
+  const showCurrent = job.status === 'running' || job.status === 'queued';
+  let html = '<div class="icloud-wf-steps">';
+  for (let i = 0; i < IWF_STEP_LABELS.length; i++) {
+    const isDone = allDone || i < step;
+    const cls = isDone ? 'done' : (showCurrent && i === step ? 'current' : '');
+    html += `<div class="icloud-wf-step ${cls}"><span class="dot">${isDone ? '✓' : i + 1}</span><span>${IWF_STEP_LABELS[i]}</span><span class="bar"></span></div>`;
+  }
+  return html + '</div>';
+}
+
+function renderIcloudWorkflow() {
+  const pool = (IWF && IWF.pool) || {};
+  $('#iwfPoolAccounts').textContent = pool.accounts != null ? pool.accounts : '-';
+  $('#iwfPoolTotal').textContent = pool.total_aliases != null ? pool.total_aliases : '-';
+  $('#iwfPoolToday').textContent = pool.today_created != null ? pool.today_created : '-';
+  $('#iwfPoolRemaining').textContent = pool.remaining != null ? pool.remaining : '-';
+
+  const running = !!(IWF && IWF.running);
+  const paused = !!(IWF && IWF.paused);
+  $('#iwfRunState').textContent = !running ? '未运行' : (paused ? '已暂停' : '运行中');
+  $('#iwfBatchId').textContent = (IWF && IWF.batch_id) || '-';
+  $('#iwfStartBtn').disabled = running;
+  $('#iwfPauseBtn').disabled = !running || paused;
+  $('#iwfResumeBtn').disabled = !running || !paused;
+  $('#iwfStopBtn').disabled = !running;
+
+  const jobs = (IWF && IWF.jobs) || [];
+  const wrap = $('#iwfJobs');
+  if (!jobs.length) {
+    wrap.innerHTML = '<div style="color:#c0c4cc;font-size:13px;padding:8px;">暂无任务，填写数量后点「开始」。</div>';
+    return;
+  }
+  wrap.innerHTML = jobs.map(job => {
+    const email = job.email ? esc(job.email) : '<span style="color:#c0c4cc;">（未领别名）</span>';
+    const errHtml = job.error ? `<div class="jerr">${esc(job.error)}</div>` : '';
+    const logs = (job.logs || []).map(l =>
+      `<div><span class="${l.level === 'error' ? 'le' : l.level === 'warn' ? 'lw' : ''}">${esc(l.ts)} [${esc(l.level.toUpperCase())}] ${esc(l.message)}</span></div>`
+    ).join('');
+    return `<div class="icloud-wf-job">
+      <div class="icloud-wf-job-head">
+        <span class="jid">${esc(job.job_id)}</span>
+        ${iwfPill(job.status)}
+        <span class="jemail">${email}</span>
+        <button type="button" class="jobs-tb-btn" style="min-height:26px;padding:0 10px;font-size:12px;" onclick="iwfRetry('${job.job_id}')" ${['failed','stopped','paused'].includes(job.status) ? '' : 'disabled'}>单步重试</button>
+        ${errHtml}
+      </div>
+      ${iwfStepBar(job)}
+      <div class="icloud-wf-logs">${logs}</div>
+    </div>`;
+  }).join('');
+}
+
+async function loadIcloudWorkflow() {
+  try {
+    const r = await api('/api/icloud-workflow/status');
+    IWF = r;
+    renderIcloudWorkflow();
+  } catch (e) {
+    $('#iwfBanner').innerHTML = `<div class="banner warn">加载工作流状态失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function iwfStart() {
+  const count = parseInt($('#iwfCount').value || '1', 10);
+  const workers = parseInt($('#iwfWorkers').value || '1', 10);
+  const country = $('#iwfCountry').value;
+  const autoUpload = $('#iwfAutoUpload').checked;
+  if (!count || count < 1) { showToast('注册数量必须 ≥ 1'); return; }
+  if (!workers || workers < 1) { showToast('并发必须 ≥ 1'); return; }
+  const btn = $('#iwfStartBtn');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/icloud-workflow/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count, country, workers, auto_upload: autoUpload }),
+    });
+    showToast(`已启动批次 ${r.batch_id}，共 ${r.jobs.length} 个号`);
+    $('#iwfBanner').innerHTML = `<div class="banner info">批次 ${esc(r.batch_id)} 已启动：数量 ${count}、并发 ${workers}、接码国家 ${country ? esc(country) : '默认'}、自动上传 ${autoUpload ? '开' : '关'}</div>`;
+    await loadIcloudWorkflow();
+  } catch (e) {
+    $('#iwfBanner').innerHTML = `<div class="banner warn">启动失败：${esc(e.message)}</div>`;
+    btn.disabled = false;
+  }
+}
+
+async function iwfPause() {
+  try {
+    const r = await api('/api/icloud-workflow/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    showToast(r.message || '已暂停');
+    await loadIcloudWorkflow();
+  } catch (e) { showToast('暂停失败: ' + e.message); }
+}
+
+async function iwfResume() {
+  try {
+    const r = await api('/api/icloud-workflow/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    showToast(r.message || '已继续');
+    await loadIcloudWorkflow();
+  } catch (e) { showToast('继续失败: ' + e.message); }
+}
+
+async function iwfStop() {
+  if (!confirm('确定停止整个 iCloud 工作流批次吗？排队的号会标记停止，运行中的号会在步骤边界停止。')) return;
+  try {
+    const r = await api('/api/icloud-workflow/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    showToast(r.message || '已请求停止');
+    await loadIcloudWorkflow();
+  } catch (e) { showToast('停止失败: ' + e.message); }
+}
+
+async function iwfRetry(jobId) {
+  try {
+    const r = await api('/api/icloud-workflow/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId }),
+    });
+    showToast(r.message || '已重新入队');
+    await loadIcloudWorkflow();
+  } catch (e) { showToast('重试失败: ' + e.message); }
+}
+
+$('#iwfStartBtn').addEventListener('click', iwfStart);
+$('#iwfPauseBtn').addEventListener('click', iwfPause);
+$('#iwfResumeBtn').addEventListener('click', iwfResume);
+$('#iwfStopBtn').addEventListener('click', iwfStop);
+$('#iwfRefreshBtn').addEventListener('click', loadIcloudWorkflow);
+
 // ---------- 全局复制委托 ----------
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-copy-id]');
@@ -6669,6 +7246,7 @@ activateTab(localStorage.getItem('gpt_console_active_tab') || 'register', false)
 jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidden')) refreshJobs(); }, 3000);
 setInterval(loadSummary, 5000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
+setInterval(() => { if (!$('#tab-icloud').classList.contains('hidden')) loadIcloudWorkflow(); }, 2500);
 </script>
 </body>
 </html>

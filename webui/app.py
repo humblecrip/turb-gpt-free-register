@@ -21,6 +21,7 @@ from flask import Flask, Response, jsonify, make_response, render_template, requ
 from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
+from core import icloud_workflow_service
 from webui import config_editor
 
 logger = logging.getLogger(__name__)
@@ -2229,6 +2230,32 @@ def create_app(auth_code: str | None = None) -> Flask:
             snapshot = dict(_CPA_REAUTH_STATE)
         return jsonify({"ok": True, **snapshot})
 
+    @app.get("/api/cpa/pool-align")
+    def api_cpa_pool_align():
+        """账号池 vs CPA auth-files 双向对齐（只读）。
+
+        有效性 = CPA 元数据（disabled/error/unavailable/高失败）+
+        实际 401 探测（下载 access_token 请求 OpenAI，覆盖元数据不同步的"假活跃"号）。
+        探测并发 probe_workers（默认 4，max 8）；耗时与 CPA-active 号数量成正比，同步返回。
+        """
+        from config import codex as _codex_cfg
+        from core import cpa_pool_align
+
+        threshold = int(getattr(_codex_cfg, "CPA_DEAD_FAILED_THRESHOLD", 20) or 20)
+        try:
+            probe_workers = int(request.args.get("probe_workers", 4) or 4)
+        except (TypeError, ValueError):
+            probe_workers = 4
+        try:
+            result = cpa_pool_align.align_account_pool_vs_cpa(
+                failed_threshold=threshold,
+                probe_workers=probe_workers,
+            )
+        except Exception as exc:
+            logger.warning("[CPA][Align] 对齐失败: %s", exc, exc_info=True)
+            return jsonify({"ok": False, "error": f"对齐失败: {type(exc).__name__}: {exc}"}), 502
+        return jsonify(result)
+
 
 
     @app.get("/api/accounts/live-check-log")
@@ -2614,6 +2641,74 @@ def create_app(auth_code: str | None = None) -> Flask:
             "job": job,
             "log": svc.read_job_log(job_id),
         })
+
+    # ----------------------------------------------------------
+    # iCloud 工作流（领别名→注册→接码→补跑→上传CPA）
+    # ----------------------------------------------------------
+    @app.post("/api/icloud-workflow/start")
+    def api_icloud_workflow_start():
+        """启动 iCloud 工作流批次。Body {count, country, workers, auto_upload}。"""
+        data = request.get_json(silent=True) or {}
+        try:
+            count = int(data.get("count", 1))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "count 必须是数字"}), 400
+        try:
+            workers = int(data.get("workers", 1))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "workers 必须是数字"}), 400
+        country = str(data.get("country") or "").strip()
+        auto_upload = bool(data.get("auto_upload", True))
+        result = icloud_workflow_service.start(
+            count=count,
+            country=country,
+            workers=workers,
+            auto_upload=auto_upload,
+        )
+        if not result.get("ok"):
+            return jsonify(result), int(result.get("status") or 400)
+        return jsonify(result)
+
+    @app.post("/api/icloud-workflow/pause")
+    def api_icloud_workflow_pause():
+        """暂停：不再开始新的号，运行中的号跑完当前步骤。"""
+        result = icloud_workflow_service.pause()
+        if not result.get("ok"):
+            return jsonify(result), int(result.get("status") or 409)
+        return jsonify(result)
+
+    @app.post("/api/icloud-workflow/resume")
+    def api_icloud_workflow_resume():
+        """继续：排队中的 paused job 恢复。"""
+        result = icloud_workflow_service.resume()
+        if not result.get("ok"):
+            return jsonify(result), int(result.get("status") or 409)
+        return jsonify(result)
+
+    @app.post("/api/icloud-workflow/stop")
+    def api_icloud_workflow_stop():
+        """停止：停止队列，排队 job 标记 stopped，运行中 job 在步骤边界停止。"""
+        result = icloud_workflow_service.stop()
+        if not result.get("ok"):
+            return jsonify(result), int(result.get("status") or 409)
+        return jsonify(result)
+
+    @app.get("/api/icloud-workflow/status")
+    def api_icloud_workflow_status():
+        """各号进度 + 别名池状态（前端轮询）。"""
+        return jsonify(icloud_workflow_service.status())
+
+    @app.post("/api/icloud-workflow/retry")
+    def api_icloud_workflow_retry():
+        """单号重试。Body {job_id}。"""
+        data = request.get_json(silent=True) or {}
+        job_id = str(data.get("job_id") or "").strip()
+        if not job_id:
+            return jsonify({"ok": False, "error": "job_id 缺失"}), 400
+        result = icloud_workflow_service.retry(job_id)
+        if not result.get("ok"):
+            return jsonify(result), int(result.get("status") or 400)
+        return jsonify(result)
 
     # ----------------------------------------------------------
     # RoxyBrowser 辅助接口
