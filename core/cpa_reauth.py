@@ -61,6 +61,57 @@ def _is_dead(item: dict, failed_threshold: int = 20) -> bool:
     return False
 
 
+def parse_cpa_error_type(item: dict) -> str:
+    """解析 CPA auth-file 的 status_message.error.type 为归一化错误类型。
+
+    归一化：usage_limit_reached → usage_limit；含 invalid_api_key /
+    authentication_error / 401 → unauthorized；其他 → 原样小写；
+    status_message 缺失或解析失败 → 空串（不抛异常）。
+    """
+    raw = (item or {}).get("status_message")
+    if not raw:
+        return ""
+    if isinstance(raw, dict):
+        data = raw  # 部分接口直接返回已解析对象，同样兼容
+    else:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return ""
+    err = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(err, dict):
+        return ""
+    etype = str(err.get("type") or "").strip().lower()
+    if not etype:
+        return ""
+    if etype == "usage_limit_reached":
+        return "usage_limit"
+    if "invalid_api_key" in etype or "authentication_error" in etype or "401" in etype:
+        return "unauthorized"
+    return etype
+
+
+def cpa_error_message(item: dict, max_len: int = 200) -> str:
+    """取 status_message.error.message，截断到 max_len；缺失/解析失败返回空串。"""
+    raw = (item or {}).get("status_message")
+    if not raw:
+        return ""
+    if isinstance(raw, dict):
+        data = raw  # 部分接口直接返回已解析对象，同样兼容
+    else:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return ""
+    err = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(err, dict):
+        return ""
+    msg = str(err.get("message") or "").strip()
+    if not msg:
+        return ""
+    return msg if len(msg) <= max_len else msg[:max_len] + "..."
+
+
 def _is_http_401(item: dict, *, timeout: float = 15, max_attempts: int = 1) -> bool:
     """下载 auth-file 的 access_token，用 chatgpt_plan.check_account_plan 实际探测是否 401。
 

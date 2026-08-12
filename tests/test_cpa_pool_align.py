@@ -11,10 +11,12 @@
 全部 mock 掉真实依赖（db.list_accounts / codex_oauth.list_cpa_codex_auth_files /
 cpa_reauth._is_http_401），不碰网络。
 """
+import json
 import unittest
 from unittest.mock import patch
 
 from core import cpa_pool_align as align
+from core import cpa_reauth
 
 
 class CpaPoolAlignMatchTests(unittest.TestCase):
@@ -200,5 +202,116 @@ class CpaPoolAlignCpaOnlyTests(unittest.TestCase):
         self.assertEqual(len(result["cpa_only"]), 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class CpaErrorTypeParseTests(unittest.TestCase):
+    def _item(self, status_message=None, **over):
+        item = {"name": "codex-a@x.com-free.json", "email": "a@x.com", "status": "error"}
+        if status_message is not None:
+            item["status_message"] = status_message
+        item.update(over)
+        return item
+
+    def test_usage_limit_reached_normalized(self):
+        sm = json.dumps({"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached"}})
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item(sm)), "usage_limit")
+        self.assertEqual(cpa_reauth.cpa_error_message(self._item(sm)), "The usage limit has been reached")
+
+    def test_invalid_api_key_normalized(self):
+        sm = json.dumps({"error": {"type": "invalid_api_key", "message": "bad key"}})
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item(sm)), "unauthorized")
+
+    def test_authentication_error_normalized(self):
+        sm = json.dumps({"error": {"type": "authentication_error", "message": "no"}})
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item(sm)), "unauthorized")
+
+    def test_type_containing_401_normalized(self):
+        sm = json.dumps({"error": {"type": "http_401_error", "message": "x"}})
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item(sm)), "unauthorized")
+
+    def test_unknown_type_passthrough(self):
+        sm = json.dumps({"error": {"type": "error", "message": "x"}})
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item(sm)), "error")
+
+    def test_missing_status_message(self):
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item()), "")
+        self.assertEqual(cpa_reauth.parse_cpa_error_type({}), "")
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(None), "")
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item("")), "")
+        self.assertEqual(cpa_reauth.cpa_error_message(self._item()), "")
+
+    def test_malformed_status_message(self):
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item("{oops")), "")
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item(12345)), "")
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item("[]")), "")
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item('{"no_error": 1}')), "")
+
+    def test_error_message_truncated(self):
+        sm = json.dumps({"error": {"type": "x", "message": "a" * 300}})
+        msg = cpa_reauth.cpa_error_message(self._item(sm))
+        self.assertEqual(len(msg), 203)  # 200 + "..."
+
+    def test_error_message_missing(self):
+        sm = json.dumps({"error": {"type": "x"}})
+        self.assertEqual(cpa_reauth.cpa_error_message(self._item(sm)), "")
+
+    def test_dict_status_message_supported(self):
+        sm = {"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached"}}
+        self.assertEqual(cpa_reauth.parse_cpa_error_type(self._item(sm)), "usage_limit")
+        self.assertEqual(cpa_reauth.cpa_error_message(self._item(sm)), "The usage limit has been reached")
+
+
+class CpaPoolAlignErrorTypeTests(unittest.TestCase):
+    def _run(self, pool, files, probe_result=False, **kw):
+        with patch("core.db.list_accounts", return_value=pool), \
+             patch("core.codex_oauth.list_cpa_codex_auth_files", return_value=files), \
+             patch("core.cpa_reauth._is_http_401", return_value=probe_result):
+            return align.align_account_pool_vs_cpa(**kw)
+
+    def test_accounts_carry_error_type_for_dead(self):
+        files = [
+            {"name": "codex-a@x.com-free.json", "email": "a@x.com", "status": "error", "unavailable": True,
+             "status_message": json.dumps({"error": {"type": "usage_limit_reached",
+                                                     "message": "The usage limit has been reached"}})},
+            {"name": "codex-b@x.com-free.json", "email": "b@x.com", "status": "active", "success": 1, "failed": 0},
+        ]
+        pool = [
+            {"email": "a@x.com", "codex_status": "success"},
+            {"email": "b@x.com", "codex_status": "success"},
+        ]
+        result = self._run(pool, files)
+        a = result["accounts"][0]
+        self.assertFalse(a["cpa_valid"])
+        self.assertEqual(a["dead_by"], "meta")
+        self.assertEqual(a["error_type"], "usage_limit")
+        self.assertEqual(a["error_message"], "The usage limit has been reached")
+        self.assertEqual(result["summary"]["cpa_usage_limit"], 1)
+        b = result["accounts"][1]
+        self.assertTrue(b["cpa_valid"])
+        self.assertEqual(b["error_type"], "")
+
+    def test_unauthorized_account_error_type(self):
+        files = [{"name": "codex-a@x.com-free.json", "email": "a@x.com", "status": "error",
+                  "status_message": json.dumps({"error": {"type": "invalid_api_key", "message": "bad"}})}]
+        pool = [{"email": "a@x.com", "codex_status": "success"}]
+        result = self._run(pool, files)
+        row = result["accounts"][0]
+        self.assertFalse(row["cpa_valid"])
+        self.assertEqual(row["error_type"], "unauthorized")
+        self.assertEqual(result["summary"]["cpa_usage_limit"], 0)
+
+    def test_cpa_only_carries_error_type(self):
+        files = [{"name": "codex-ghost@x.com-free.json", "email": "ghost@x.com", "status": "error",
+                  "status_message": json.dumps({"error": {"type": "invalid_api_key", "message": "bad"}})}]
+        result = self._run([], files, probe_401=False)
+        self.assertEqual(len(result["cpa_only"]), 1)
+        self.assertEqual(result["cpa_only"][0]["error_type"], "unauthorized")
+        self.assertEqual(result["cpa_only"][0]["error_message"], "bad")
+
+    def test_malformed_status_message_does_not_break_align(self):
+        files = [{"name": "codex-a@x.com-free.json", "email": "a@x.com", "status": "error",
+                  "status_message": "{oops"}]
+        pool = [{"email": "a@x.com", "codex_status": "success"}]
+        result = self._run(pool, files)
+        row = result["accounts"][0]
+        self.assertFalse(row["cpa_valid"])
+        self.assertEqual(row["error_type"], "")
+        self.assertEqual(row["error_message"], "")

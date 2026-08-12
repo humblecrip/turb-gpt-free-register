@@ -1794,6 +1794,8 @@
     .cpa-align-stat.is-missing b { color: #fa8c16; }
     .cpa-align-stat.is-only { background: #fafafa; border-color: #ebebef; color: #909399; }
     .cpa-align-stat.is-only b { color: #909399; }
+    .cpa-align-stat.is-usage-limit { background: #fffbe6; border-color: #ffe58f; color: #d48806; }
+    .cpa-align-stat.is-usage-limit b { color: #d48806; }
     .cpa-align-list {
       display: grid; gap: 6px;
       max-height: min(520px, 55vh); overflow: auto;
@@ -1838,6 +1840,9 @@
     }
     .cpa-align-body .pill.cpa-align-pill.is-only {
       color: #909399; background: #fafafa; border-color: #ebebef;
+    }
+    .cpa-align-body .pill.cpa-align-pill.is-usage-limit {
+      color: #d48806; background: #fffbe6; border-color: #ffe58f;
     }
     .cpa-align-foot {
       display: flex; justify-content: flex-end; gap: 10px;
@@ -5866,8 +5871,13 @@ async function runCpaAlign() {
 function _cpaAlignBadge(a) {
   if (!a.in_cpa) return `<span class="pill cpa-align-pill is-missing" title="本地账号池有，但 CPA auth-files 中没有该邮箱的 codex 凭证">未上CPA</span>`;
   if (a.cpa_valid) return `<span class="pill cpa-align-pill is-valid" title="CPA 元数据正常且实际探测非 401">有效</span>`;
+  const et = a.error_type || '';
+  const em = a.error_message ? esc(a.error_message) : '';
+  if (et === 'usage_limit') return `<span class="pill cpa-align-pill is-usage-limit" title="额度用完（usage_limit_reached）${em ? '：' + em : ''}">额度用完</span>`;
+  if (et === 'unauthorized') return `<span class="pill cpa-align-pill is-dead" title="401/认证失效${em ? '：' + em : ''}">401/失效</span>`;
   const why = a.dead_by === '401' ? '实际请求 OpenAI 返回 401' : 'CPA 元数据失效（disabled/error/unavailable/高失败）';
-  return `<span class="pill cpa-align-pill is-dead" title="${esc(why)}">失效</span>`;
+  const extra = et ? `（${esc(et)}）` : '';
+  return `<span class="pill cpa-align-pill is-dead" title="${esc(why)}">失效${extra}</span>`;
 }
 function renderCpaAlign() {
   const list = $('#cpaAlignList');
@@ -5877,12 +5887,14 @@ function renderCpaAlign() {
     return;
   }
   const s = CPA_ALIGN.summary || {};
+  const usageLimit = s.cpa_usage_limit || 0;
   if (summary) {
     summary.innerHTML = [
       `<span class="cpa-align-stat">账号池 <b>${s.pool_total || 0}</b></span>`,
       `<span class="cpa-align-stat">在CPA <b>${s.in_cpa || 0}</b></span>`,
       `<span class="cpa-align-stat is-valid">CPA有效 <b>${s.cpa_valid || 0}</b></span>`,
       `<span class="cpa-align-stat is-dead">CPA失效 <b>${s.cpa_dead || 0}</b></span>`,
+      usageLimit > 0 ? `<span class="cpa-align-stat is-usage-limit">额度用完 <b>${usageLimit}</b></span>` : '',
       `<span class="cpa-align-stat is-missing">未上CPA <b>${s.not_in_cpa || 0}</b></span>`,
       `<span class="cpa-align-stat is-only">仅CPA <b>${s.cpa_only || 0}</b></span>`,
     ].join('');
@@ -5896,12 +5908,15 @@ function renderCpaAlign() {
       ${note}${fname}
     </div>`;
   }).join('');
-  const onlyRows = (CPA_ALIGN.cpa_only || []).map(o => `<div class="cpa-align-row">
+  const onlyRows = (CPA_ALIGN.cpa_only || []).map(o => {
+    const onlyNote = [o.status, o.error_type ? `错误类型:${o.error_type}` : ''].filter(Boolean).join(' · ');
+    return `<div class="cpa-align-row">
     <span class="cpa-align-email" title="${esc(o.email || o.name)}">${esc(o.email || o.name)}</span>
     <span class="pill cpa-align-pill is-only" title="CPA 有该凭证，但本地账号池没有">仅CPA</span>
-    <span class="cpa-align-note" title="${esc(o.status || '')}">${esc(o.status || '')}</span>
+    <span class="cpa-align-note" title="${esc(onlyNote)}">${esc(onlyNote)}</span>
     <span class="cpa-align-fname" title="${esc(o.name)}">${esc(o.name)}</span>
-  </div>`).join('');
+  </div>`;
+  }).join('');
   const extra = onlyRows ? `<div class="cpa-align-only-title">仅 CPA（账号池无）</div>${onlyRows}` : '';
   if (list) {
     list.innerHTML = rows || '<div class="jobs-v2-empty">账号池为空</div>';

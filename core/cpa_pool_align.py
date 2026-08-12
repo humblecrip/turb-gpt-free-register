@@ -68,11 +68,13 @@ def align_account_pool_vs_cpa(
     Returns:
         {
           ok: True,
-          summary: { pool_total, in_cpa, cpa_valid, cpa_dead, not_in_cpa, cpa_only },
-          accounts: [ {email, codex_status, in_cpa, cpa_valid, cpa_name, cpa_status, dead_by, note} ],
-          cpa_only: [ {name, email, status} ],
+          summary: { pool_total, in_cpa, cpa_valid, cpa_dead, not_in_cpa, cpa_only, cpa_usage_limit },
+          accounts: [ {email, codex_status, in_cpa, cpa_valid, cpa_name, cpa_status, dead_by,
+                       error_type, error_message, note} ],
+          cpa_only: [ {name, email, status, error_type, error_message} ],
         }
         accounts 数组与账号池顺序一致；dead_by ∈ {'meta','401',''}。
+        error_type 为 status_message.error.type 归一化值（usage_limit / unauthorized / 其他 / ''）。
     """
     from core import db
 
@@ -102,9 +104,13 @@ def align_account_pool_vs_cpa(
             "cpa_name": str((item or {}).get("name") or "").strip() if item else "",
             "cpa_status": str((item or {}).get("status") or "").strip() if item else "",
             "dead_by": "",
+            "error_type": "",
+            "error_message": "",
             "note": "",
         }
         if item:
+            row["error_type"] = cpa_reauth.parse_cpa_error_type(item)
+            row["error_message"] = cpa_reauth.cpa_error_message(item)
             if cpa_reauth._is_dead(item, failed_threshold=failed_threshold):
                 row["dead_by"] = "meta"
                 row["note"] = "CPA 元数据失效（disabled/error/unavailable/高失败）"
@@ -164,11 +170,17 @@ def align_account_pool_vs_cpa(
             "name": name,
             "email": email,
             "status": str(item.get("status") or "").strip(),
+            "error_type": cpa_reauth.parse_cpa_error_type(item),
+            "error_message": cpa_reauth.cpa_error_message(item),
         })
 
     cpa_valid = sum(1 for a in accounts if a["cpa_valid"])
     cpa_dead = sum(1 for a in accounts if a["in_cpa"] and not a["cpa_valid"])
     not_in_cpa = sum(1 for a in accounts if not a["in_cpa"])
+    # 只统计"已失效但原因是额度用完"的号，与前端 额度用完 标签（!cpa_valid + usage_limit）保持一致
+    cpa_usage_limit = sum(
+        1 for a in accounts if a["in_cpa"] and not a["cpa_valid"] and a.get("error_type") == "usage_limit"
+    )
     summary = {
         "pool_total": len(accounts),
         "in_cpa": in_cpa,
@@ -176,10 +188,12 @@ def align_account_pool_vs_cpa(
         "cpa_dead": cpa_dead,
         "not_in_cpa": not_in_cpa,
         "cpa_only": len(cpa_only),
+        "cpa_usage_limit": cpa_usage_limit,
     }
     logger.info(
-        "[CPA][Align] 对齐完成：pool=%s in_cpa=%s valid=%s dead=%s not_in_cpa=%s cpa_only=%s",
+        "[CPA][Align] 对齐完成：pool=%s in_cpa=%s valid=%s dead=%s not_in_cpa=%s cpa_only=%s usage_limit=%s",
         summary["pool_total"], summary["in_cpa"], summary["cpa_valid"],
         summary["cpa_dead"], summary["not_in_cpa"], summary["cpa_only"],
+        summary["cpa_usage_limit"],
     )
     return {"ok": True, "summary": summary, "accounts": accounts, "cpa_only": cpa_only}
