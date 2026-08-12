@@ -46,6 +46,7 @@ from core.openai_auth import (
     network_preflight,
 )
 from core import sms_provider
+from curl_cffi import CurlMime
 from curl_cffi import requests as curl_requests
 
 logger = logging.getLogger(__name__)
@@ -518,6 +519,79 @@ def download_cpa_codex_auth_text(*, cpa_name: str | None = None, email: str = ""
     if not isinstance(parsed, dict):
         raise RuntimeError(f"[Codex][CPA] CPA 下载内容不是 JSON 对象: {name}")
     return json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", name, (meta or {"name": name})
+
+
+def upload_cpa_auth_file(*, email: str = "", name: str = "", content: str = "") -> dict:
+    """把 auth 文件内容 multipart 上传到 CPA auth-files，触发 CPA 完整重解析。
+
+    CPA 的 oauth-callback 只写文件、不触发内存 auth manager 重载（实测 id_token
+    account_id 解析为 None、status error、auth token not found）；只有通过
+    POST /v0/management/auth-files（multipart 上传）才会立即注册到 runtime。
+    本函数用于补跑成功后主动上传，避免手动重传/重启。
+
+    参数：
+        email    只给 email 时，先 download_cpa_codex_auth_text 下载该邮箱 CPA 侧
+                 最新 auth 文件（最稳妥：落盘的 callback 回执无 access_token，
+                 直接重新上传下载到的完整 auth 文件即可触发重解析）
+        name     CPA 侧文件名（如 codex-user@example.com-free.json）
+        content  auth 文件 JSON 文本
+
+    返回：
+        响应 dict（{"status": "ok"} 视为成功）；非 2xx 抛 RuntimeError。
+    """
+    if not content and email:
+        content, name, _ = download_cpa_codex_auth_text(email=email)
+    name = str(name or "").strip()
+    content = str(content or "").strip()
+    if not name or not content:
+        raise ValueError(
+            "[Codex][CPA] upload_cpa_auth_file 需要 name 和 content（或提供 email 自动下载）"
+        )
+
+    origin = _cpa_management_origin()
+    key = _cpa_management_key()
+    timeout = int(getattr(_cfg, "CPA_REQUEST_TIMEOUT", 30) or 30)
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {key}",
+        "X-Management-Key": key,
+    }
+    url = f"{origin}/v0/management/auth-files"
+    session = curl_requests.Session()
+    mime = CurlMime()
+    try:
+        mime.addpart("name", data=name.encode("utf-8"))
+        mime.addpart(
+            "file",
+            filename=name,
+            content_type="application/json",
+            data=content.encode("utf-8"),
+        )
+        resp = session.post(url, headers=headers, multipart=mime, timeout=timeout)
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {}
+        if resp.status_code < 200 or resp.status_code >= 300:
+            msg = ""
+            if isinstance(payload, dict):
+                msg = payload.get("error") or payload.get("message") or payload.get("detail") or payload.get("reason") or ""
+            raise RuntimeError(
+                f"[Codex][CPA] auth-files 上传失败 status={resp.status_code}: "
+                f"{msg or (resp.text or '')[:300]}"
+            )
+        result = payload if isinstance(payload, dict) else {}
+        logger.info("[Codex][CPA] auth 文件已上传（触发重载）：name=%s", name)
+        return result
+    finally:
+        try:
+            mime.close()
+        except Exception:
+            pass
+        try:
+            session.close()
+        except Exception:
+            pass
 
 def _first_non_empty(*values) -> str:
     for value in values:

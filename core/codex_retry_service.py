@@ -226,6 +226,20 @@ def run_worker(
         if result.get("ok"):
             db.update_account_codex_status(email, "success", None)
             logger.info("[Codex 补跑] %s 成功", email)
+            # CPA 模式：主动上传 auth 文件触发 CPA 完整重解析，避免 auth token not found。
+            # CPA 的 oauth-callback 落盘只写文件不触发内存加载；multipart 上传才会立即注册。
+            try:
+                from config import codex as _retry_codex_cfg
+                _cpa_mode = str(getattr(_retry_codex_cfg, "CODEX_AUTH_URL_SOURCE", "") or "").lower() == "cpa"
+            except Exception:
+                _cpa_mode = False
+            if _cpa_mode:
+                try:
+                    from core.codex_oauth import upload_cpa_auth_file
+                    upload_cpa_auth_file(email=email)
+                    logger.info("[Codex 补跑] CPA auth 文件已重新上传（触发重载）: %s", email)
+                except Exception as exc:
+                    logger.warning("[Codex 补跑] CPA auth 文件上传失败（不阻塞补跑成功）: %s: %s", email, exc)
         elif result_status == "deactivated":
             db.update_account_codex_status(email, "deactivated", result.get("message"))
             logger.warning("[Codex 补跑] %s 账号已废: %s", email, result.get("message"))
