@@ -38,7 +38,7 @@ class GPTMailProviderTests(unittest.TestCase):
             with patch.object(email_config, "USE_EMAIL_SERVICE", True):
                 self.assertEqual(email_provider.wait_for_otp("fresh@gptmail.test", after_ts=123.0), "654321")
         fetch_latest_otp.assert_called_once_with("fresh@gptmail.test", after_ts=123.0)
-        record_result.assert_called_once_with("fresh@gptmail.test", True)
+        record_result.assert_not_called()
 
     @patch("core.gptmail_client.fetch_latest_otp", side_effect=RuntimeError("timeout"))
     @patch("core.email_provider.resolve_email_source", return_value="gptmail")

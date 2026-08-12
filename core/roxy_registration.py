@@ -1909,6 +1909,46 @@ def _accept_profile_consents(driver) -> int:
         return 0
 
 
+def _detect_profile_submit_error(driver) -> str | None:
+    """资料页提交后检测页面是否出现错误提示。
+
+    主要识别 OpenAI 拒绝邮箱域名的 unsupported_email（含多语言文案），
+    以及页面可见的表单错误。返回错误描述；无错误/检测失败返回 None。
+    """
+    try:
+        state = _email_otp_page_state(driver)
+    except Exception:
+        return None
+    text = str(state.get("text") or "")
+    text_lower = text.lower()
+    for marker, label in (
+        ("unsupported_email", "unsupported_email（OpenAI 拒绝该邮箱域名）"),
+        ("unsupported email", "unsupported_email（OpenAI 拒绝该邮箱域名）"),
+        ("サポートされていません", "邮箱域名不受支持（unsupported_email）"),
+        ("not supported", "邮箱域名不受支持（unsupported_email）"),
+        ("不支持的邮箱", "邮箱域名不受支持（unsupported_email）"),
+        ("未支持的邮箱", "邮箱域名不受支持（unsupported_email）"),
+    ):
+        if marker in text_lower:
+            return label
+    for err in state.get("errors") or []:
+        err_text = str(err).strip()
+        if err_text:
+            return f"页面错误提示: {err_text[:200]}"
+    for marker, label in (
+        ("不明なエラー", "页面出现未知错误"),
+        ("エラーが発生", "页面出现错误"),
+        ("error_code:", "页面返回错误码"),
+        ("something went wrong", "页面出现未知错误"),
+        ("an error occurred", "页面出现未知错误"),
+        ("发生错误", "页面出现错误"),
+        ("出错了", "页面出现错误"),
+    ):
+        if marker in text_lower:
+            return label
+    return None
+
+
 def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45) -> bool:
     """等待并完成姓名/生日页；若已经登录成功则返回 False，不把它当失败。"""
     end = time.time() + timeout
@@ -1965,6 +2005,17 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45) 
         for _ in range(3):
             if _click_if_enabled_submit(driver):
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
+                # 提交后短暂观察：被拒时错误提示可能延迟渲染，检测到立即报错，避免空转等 session。
+                submit_err = None
+                submit_end = time.time() + 5.0
+                while time.time() < submit_end:
+                    submit_err = _detect_profile_submit_error(driver)
+                    if submit_err:
+                        break
+                    time.sleep(1)
+                if submit_err:
+                    logger.error('%s 资料页提交被拒：%s', _log_prefix(driver), submit_err)
+                    raise RuntimeError(f'资料页提交被拒: {submit_err}')
                 return True
             time.sleep(1)
         logger.warning('%s 找不到可点击的资料页提交按钮 snapshot=%s', _log_prefix(driver), _page_snapshot(driver))
@@ -2619,6 +2670,13 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = session_info["accessToken"]
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
+        try:
+            if resolve_email_source(email) == "gptmail":
+                from core.gptmail_client import record_register_result
+                record_register_result(email, True)
+                logger.info("[Roxy注册] GPTMail 注册成功，域名池 +1：%s", email)
+        except Exception as exc:
+            logger.warning("[Roxy注册] GPTMail 成功回写失败（不影响主流程）：%s", exc)
         _check_manual_stop()
 
         if _twofa_cfg.ENABLE_2FA:
@@ -2680,6 +2738,18 @@ def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = Non
     except Exception as exc:
         logger.error("[Roxy注册] 失败：%s: %s", type(exc).__name__, exc)
         logger.debug("[Roxy注册] 失败详情", exc_info=True)
+        # GPTMail 失败回写必须先于 release_email：release_email 会清掉 gptmail 上下文缓存，
+        # 之后再 resolve_email_source 就识别不出 gptmail，回写会静默失效。
+        try:
+            if resolve_email_source(email) == "gptmail":
+                from core.gptmail_client import record_register_result
+                msg = str(exc)
+                # OTP 取码失败已在 wait_for_otp 内回写 -1；只在域名被拒或 OTP 之后阶段失败时回写，避免重复扣分。
+                if create_acknowledged or "unsupported_email" in msg or "资料页提交被拒" in msg:
+                    record_register_result(email, False)
+                    logger.info("[Roxy注册] GPTMail 注册失败，域名池 -1：%s", email)
+        except Exception:
+            pass
         # 未确认创建前回收邮箱；确认后避免重复使用。
         try:
             from core.email_provider import release_email

@@ -181,6 +181,8 @@ def wait_for_otp(
 
     source = resolve_email_source(email)
     if source == "gptmail":
+        # 收码成功 ≠ 注册成功：不在取码成功时 +1 域名池，
+        # 成功回写改由注册流程拿到 accessToken 后触发（见 roxy_registration）。
         from core.gptmail_client import fetch_latest_otp, record_register_result
         try:
             otp = fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -190,10 +192,6 @@ def wait_for_otp(
             except Exception:
                 pass
             raise
-        try:
-            record_register_result(email, True)
-        except Exception:
-            pass
         return otp
     if source == "cloudflare":
         from core.cf_temp_mail_client import fetch_latest_otp
