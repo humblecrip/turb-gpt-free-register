@@ -73,8 +73,24 @@ def _pick_from_source(source: str) -> str:
     return pick_account().email
 
 
-def acquire_email() -> str:
-    """根据 EMAIL_SOURCE 领取一个用于注册的邮箱地址；多个来源时按顺序兜底。"""
+def acquire_email(source: str | None = None) -> str:
+    """根据 EMAIL_SOURCE 领取一个用于注册的邮箱地址；多个来源时按顺序兜底。
+
+    source 非空时只从该来源领取（失败直接报错，不兜底其他来源），
+    供注册页「邮箱源选择」按次指定来源使用。
+    """
+    if source:
+        source = str(source).strip().lower()
+        if source not in _VALID_SOURCES:
+            raise RuntimeError(f"不支持的邮箱来源: {source!r}")
+        try:
+            email = _pick_from_source(source)
+            logger.info(f"[EmailProvider] 使用邮箱来源: {source}, email={email}")
+            return email
+        except Exception as exc:
+            raise RuntimeError(
+                f"邮箱来源 {source} 领取失败: {type(exc).__name__}: {exc}"
+            ) from exc
     sources = parse_email_sources()
     last_exc: Exception | None = None
     for source in sources:

@@ -637,6 +637,10 @@ _SMS_STATS_LOCK = threading.Lock()
 # iCloud 工作流等调用方选中的国家，前置到队列头（优先级最高）；批次结束后清空
 _SMS_COUNTRY_PREFER: str = ""
 
+# 注册任务按次指定的接码国家/排序覆盖（threading.local，只对当前任务线程生效，
+# 任务结束 clear_task_sms_override 清除，避免污染线程池复用的其他任务）
+_SMS_THREAD_CTX = threading.local()
+
 # auto 排序时过滤成功率低于该阈值的国家
 _MIN_SUCCESS_RATE = 0.3
 
@@ -647,8 +651,35 @@ def set_country_prefer(country: str | None) -> None:
     _SMS_COUNTRY_PREFER = str(country or "").strip()
 
 
+def set_task_sms_override(country: str | None, sort: str | None) -> None:
+    """设置当前线程（注册任务）的接码国家/排序覆盖；只对当前线程生效，不改全局配置。"""
+    _SMS_THREAD_CTX.country = str(country or "").strip()
+    _SMS_THREAD_CTX.sort = str(sort or "").strip().lower()
+
+
+def clear_task_sms_override() -> None:
+    """清除当前线程的接码覆盖（任务结束/线程复用前必须调用）。"""
+    for attr in ("country", "sort"):
+        try:
+            delattr(_SMS_THREAD_CTX, attr)
+        except AttributeError:
+            pass
+
+
+def _task_country_prefer() -> str:
+    return str(getattr(_SMS_THREAD_CTX, "country", "") or "").strip()
+
+
+def _task_sort() -> str:
+    return str(getattr(_SMS_THREAD_CTX, "sort", "") or "").strip().lower()
+
+
 def _prepend_prefer(queue: list[str], prefer: str | None) -> list[str]:
-    pref = str(prefer if prefer is not None else _SMS_COUNTRY_PREFER or "").strip()
+    pref = str(
+        prefer
+        if prefer is not None
+        else (_task_country_prefer() or _SMS_COUNTRY_PREFER or "")
+    ).strip()
     if not pref:
         return list(queue)
     result = [pref]
@@ -832,9 +863,11 @@ def resolve_country_queue(prefer: str | None = None, sort: str | None = None) ->
         "auto_success" = 成功率优先(主) + 价格兜底(次)
     为空或省略时读配置 SMS_COUNTRY_SORT。API 拉取失败自动回落 manual。
     prefer 非空时前置到队列头（去重），优先级最高。
+    线程级 set_task_sms_override 覆盖优先于配置（按次任务参数）。
     """
     sort = (
         str(sort or "").strip().lower()
+        or _task_sort()
         or str(getattr(_cfg, "SMS_COUNTRY_SORT", "") or "").strip().lower()
     )
     if sort in ("auto_price", "auto_success"):

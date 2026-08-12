@@ -35,6 +35,10 @@ _ACTIVE_JOBS: set[int] = set()
 _STOP_LOCK = threading.Lock()
 _THREAD_CTX = threading.local()
 
+# 每个任务的按次可选参数（邮箱源 / 接码国家 / 接码排序），只在任务提交时写入，
+# 任务线程开始时读到线程本地并应用，任务结束（_deactivate_job）后清理。
+_JOB_OPTIONS: dict[int, dict[str, str | None]] = {}
+
 
 class StopRequested(RuntimeError):
     """用户手动停止注册任务。"""
@@ -55,6 +59,16 @@ def _deactivate_job(job_id: int) -> None:
         delattr(_THREAD_CTX, "job_id")
     except Exception:
         pass
+    try:
+        delattr(_THREAD_CTX, "email_source")
+    except Exception:
+        pass
+    try:
+        from core import sms_provider
+        sms_provider.clear_task_sms_override()
+    except Exception:
+        pass
+    _JOB_OPTIONS.pop(int(job_id), None)
 
 
 def is_stop_requested(job_id: int | None = None) -> bool:
@@ -119,7 +133,8 @@ def _prepare_registration_args() -> tuple[str, str, str]:
     # 邮箱领取会把池状态置为 used，因此放在所有其他准备逻辑之后。
     if not email:
         if _e.USE_EMAIL_SERVICE:
-            email = acquire_email()
+            # 注册页「邮箱源」选择：本任务线程指定的来源非空时只从该源领取
+            email = acquire_email(source=getattr(_THREAD_CTX, "email_source", None))
         else:
             raise RuntimeError(
                 "手动模式未配置邮箱。请在 WebUI 配置页设置 REGISTER_EMAIL，"
@@ -279,6 +294,17 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     log_logger = logging.getLogger(__name__)
     _activate_job(job_id)
 
+    # 应用本次任务的按次参数：邮箱源（只从该源领取）+ 接码国家/排序（只对本线程生效）
+    options = _JOB_OPTIONS.get(int(job_id)) or {}
+    if options.get("email_source"):
+        _THREAD_CTX.email_source = options["email_source"]
+    if options.get("sms_country") or options.get("sms_sort"):
+        try:
+            from core import sms_provider
+            sms_provider.set_task_sms_override(options.get("sms_country"), options.get("sms_sort"))
+        except Exception:
+            log_logger.exception(f"[Job {job_id}] 设置接码国家/排序覆盖失败")
+
     # 取消检查：用户可能在任务排队期间点了"取消排队"，把 status 改成了 cancelled。
     # 因为 Future 已经 submit 进线程池无法撤回，只能在真正执行前自检一下，跳过 cancelled 的。
     current = db.get_job(job_id)
@@ -427,10 +453,21 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
 # 公共接口
 # ============================================================
 
-def submit_registration(count: int = 1, email_source: str | None = None, workers: int | None = None) -> list[dict]:
+def submit_registration(
+    count: int = 1,
+    email_source: str | None = None,
+    workers: int | None = None,
+    sms_country: str | None = None,
+    sms_sort: str | None = None,
+) -> list[dict]:
     """
     创建 N 个注册任务并提交到线程池。
-    email_source 仅记录到 DB；实际邮箱来源固定为 Outlook 账号池。
+
+    email_source 非空且为单一合法来源时，本次任务 worker 只从该邮箱来源领取（不兜底
+    其他来源）；为空或多来源值（如配置默认 "icloud_hme,outlook"）时按配置 EMAIL_SOURCE
+    顺序领取。email_source 同时记录到 DB。
+    sms_country / sms_sort 只对本次任务生效：worker 补跑 Codex 接码时把 sms_country
+    前置到国家队列头、用 sms_sort 覆盖排序策略，任务结束自动恢复。
 
     Returns:
         N 个新创建的 job dict
@@ -438,6 +475,29 @@ def submit_registration(count: int = 1, email_source: str | None = None, workers
     if email_source is None:
         from config import email as _email_cfg
         email_source = _email_cfg.EMAIL_SOURCE
+
+    sms_country = str(sms_country or "").strip() or None
+    sms_sort = str(sms_sort or "").strip().lower() or None
+    if sms_sort not in (None, "manual", "auto_price", "auto_success"):
+        raise ValueError(f"不支持的接码排序策略: {sms_sort}")
+
+    # email_source 的语义是"指定单一来源"：只有当值能解析成唯一合法来源时才下发到 worker。
+    # 多来源配置（如 "icloud_hme,outlook"）不能当作单一来源，否则 worker 会
+    # acquire_email(source='icloud_hme,outlook') 报"不支持的邮箱来源"；置 None 让 worker
+    # 走默认按配置顺序兜底（acquire_email 无 source 时原生支持多来源回退）。
+    raw_email_source = str(email_source or "").strip() or None
+    options_email_source: str | None = None
+    if raw_email_source:
+        from core.email_provider import parse_email_sources
+        parsed = parse_email_sources(raw_email_source)
+        if len(parsed) == 1 and parsed[0] == raw_email_source:
+            options_email_source = parsed[0]
+
+    options = {
+        "email_source": options_email_source,
+        "sms_country": sms_country,
+        "sms_sort": sms_sort,
+    }
 
     # 创建/切换线程池和提交本批任务必须整体串行化：否则另一请求在本批提交中途
     # 切换 workers 并 shutdown 旧池，会导致后续 submit 报 cannot schedule new futures after shutdown。
@@ -447,9 +507,11 @@ def submit_registration(count: int = 1, email_source: str | None = None, workers
         jobs = []
         for _ in range(count):
             job = db.create_job(email_source=email_source)
+            _JOB_OPTIONS[int(job["id"])] = dict(options)
             try:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
             except Exception as exc:
+                _JOB_OPTIONS.pop(int(job["id"]), None)
                 db.update_job(
                     int(job["id"]),
                     status="failed",

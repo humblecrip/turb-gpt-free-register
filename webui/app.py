@@ -2365,7 +2365,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/jobs")
     def api_jobs_create():
-        """启动批量注册：body {count, workers}。"""
+        """启动批量注册：body {count, workers, email_source, sms_country, sms_sort}。"""
         data = request.get_json(silent=True) or {}
         try:
             count = int(data.get("count", 1))
@@ -2380,10 +2380,21 @@ def create_app(auth_code: str | None = None) -> Flask:
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
 
+        # 注册页「邮箱源」选择：非空时本次任务只用该源（如 icloud_hme / gptmail），不改全局配置
+        from core.email_provider import parse_email_sources
+        email_source = str(data.get("email_source") or "").strip() or None
+        if email_source and parse_email_sources(email_source) != [email_source]:
+            return jsonify({"ok": False, "error": f"不支持的邮箱来源: {email_source}"}), 400
+
+        # 注册页「接码国家」选择：sms_country 具体国家前置队列头；sms_sort 覆盖排序策略
+        sms_country = str(data.get("sms_country") or "").strip() or None
+        sms_sort = str(data.get("sms_sort") or "").strip().lower() or None
+        if sms_sort not in (None, "manual", "auto_price", "auto_success"):
+            return jsonify({"ok": False, "error": f"不支持的接码排序策略: {sms_sort}"}), 400
+
         # 提交前先确认池里有足够可用邮箱，给前端一个温和提示（不阻断）
         from config import email as _email_cfg
         from config import register as _register_cfg
-        from core.email_provider import parse_email_sources
         if not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)):
             reg_email = str(getattr(_register_cfg, "REGISTER_EMAIL", "") or "").strip()
             if not reg_email:
@@ -2396,7 +2407,10 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok": False,
                     "error": "手动模式建议每次只跑 1 个任务（同一 REGISTER_EMAIL）。请把数量设为 1。",
                 }), 400
-            jobs = svc.submit_registration(count=count, workers=workers)
+            jobs = svc.submit_registration(
+                count=count, workers=workers, email_source=email_source,
+                sms_country=sms_country, sms_sort=sms_sort,
+            )
             return jsonify({
                 "ok": True,
                 "submitted": len(jobs),
@@ -2404,7 +2418,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "warning": f"手动 OTP 模式：将使用 {reg_email}；验证码请在任务页提交",
                 "workers": workers,
             })
-        sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
+        sources = [email_source] if email_source else parse_email_sources(_email_cfg.EMAIL_SOURCE)
         if "gptmail" in sources:
             api_key = str(getattr(_email_cfg, "GPTMAIL_API_KEY", "") or "").strip()
             if not api_key:
@@ -2481,7 +2495,14 @@ def create_app(auth_code: str | None = None) -> Flask:
             warning = ""
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
-        jobs = svc.submit_registration(count=count, workers=workers)
+        submit_kwargs = {"count": count, "workers": workers}
+        if email_source:
+            submit_kwargs["email_source"] = email_source
+        if sms_country:
+            submit_kwargs["sms_country"] = sms_country
+        if sms_sort:
+            submit_kwargs["sms_sort"] = sms_sort
+        jobs = svc.submit_registration(**submit_kwargs)
         return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
 
     @app.get("/api/manual-otp/waiting")
