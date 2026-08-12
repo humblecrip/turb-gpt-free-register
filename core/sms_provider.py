@@ -18,8 +18,10 @@
 """
 import json
 import logging
+import re
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urljoin
 
 from curl_cffi.requests import Session as CurlSession
@@ -619,3 +621,228 @@ def cancel(activation_id: str, http: CurlSession | None = None, background: bool
     )
     t.start()
     logger.debug(f"[SMS] 取消任务已派后台：activation_id={activation_id}")
+
+
+# ============================================================
+# 国家优先级队列（统一入口）
+# ============================================================
+
+# 兜底默认队列（原 codex_oauth / roxy_codex_oauth 硬编码值）
+_DEFAULT_COUNTRY_QUEUE = ["54", "76", "73", "33"]
+
+# 本地接码成功率埋点文件：{country: {success, failed}}
+_SMS_STATS_FILE = Path(__file__).resolve().parent.parent / "data" / "sms_country_stats.json"
+_SMS_STATS_LOCK = threading.Lock()
+
+# iCloud 工作流等调用方选中的国家，前置到队列头（优先级最高）；批次结束后清空
+_SMS_COUNTRY_PREFER: str = ""
+
+# auto 排序时过滤成功率低于该阈值的国家
+_MIN_SUCCESS_RATE = 0.3
+
+
+def set_country_prefer(country: str | None) -> None:
+    """设置/清空"前置到队列头"的国家（如 iCloud 工作流选的接码国家）。"""
+    global _SMS_COUNTRY_PREFER
+    _SMS_COUNTRY_PREFER = str(country or "").strip()
+
+
+def _prepend_prefer(queue: list[str], prefer: str | None) -> list[str]:
+    pref = str(prefer if prefer is not None else _SMS_COUNTRY_PREFER or "").strip()
+    if not pref:
+        return list(queue)
+    result = [pref]
+    for country in queue:
+        if country != pref:
+            result.append(country)
+    return result
+
+
+def _manual_country_queue() -> list[str]:
+    """manual 队列：SMS_COUNTRY（主）+ SMS_FALLBACK_COUNTRIES（备选，逗号分隔）去重。"""
+    primary = str(getattr(_cfg, "SMS_COUNTRY", "") or "").strip()
+    fallback = str(getattr(_cfg, "SMS_FALLBACK_COUNTRIES", "") or "").strip()
+    pieces = [primary]
+    if fallback:
+        pieces.extend(re.split(r"[,，\s]+", fallback))
+    queue = []
+    for piece in pieces:
+        piece = piece.strip()
+        if piece and piece not in queue:
+            queue.append(piece)
+    return queue or list(_DEFAULT_COUNTRY_QUEUE)
+
+
+def _grizzly_json_action(action: str, http: CurlSession | None = None) -> dict:
+    """调 Grizzly/HeroSMS 的 JSON 类 action（getPrices/getNumbersStatus/getTopCountriesByService）。"""
+    params = {"action": action}
+    if _cfg.SMS_SERVICE:
+        params["service"] = _cfg.SMS_SERVICE
+    own_http = http is None
+    http = http or _http()
+    try:
+        text = _request_grizzly(http, params)
+    finally:
+        if own_http:
+            http.close()
+    try:
+        data = json.loads(text)
+    except Exception:
+        raise SmsProviderError(f"{action} 响应不是 JSON：{text[:200]}")
+    if not isinstance(data, dict):
+        raise SmsProviderError(f"{action} 响应不是 JSON 对象：{text[:200]}")
+    return data
+
+
+def _fetch_price_info() -> tuple[dict, dict]:
+    """返回 (prices, numbers_status)：{country: 价格} 与 {country: 可用号量}。"""
+    prices_raw = _grizzly_json_action("getPrices")
+    status_raw = _grizzly_json_action("getNumbersStatus")
+    service = _cfg.SMS_SERVICE
+    prices: dict[str, float] = {}
+    status: dict[str, int] = {}
+    for country, val in (prices_raw or {}).items():
+        service_val = val.get(service) if isinstance(val, dict) else None
+        if isinstance(service_val, dict):
+            try:
+                prices[str(country)] = float(service_val.get("cost") or 0)
+            except (TypeError, ValueError):
+                pass
+    for country, val in (status_raw or {}).items():
+        if isinstance(val, dict):
+            count = val.get(service)
+            if isinstance(count, (int, float)) and count > 0:
+                status[str(country)] = int(count)
+        elif isinstance(val, (int, float)) and val > 0:
+            status[str(country)] = int(val)
+    return prices, status
+
+
+def _load_sms_stats() -> dict:
+    try:
+        if _SMS_STATS_FILE.exists():
+            data = json.loads(_SMS_STATS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        logger.warning(f"[SMS] 读取本地成功率埋点失败（忽略）：{exc}")
+    return {}
+
+
+def _save_sms_stats(stats: dict) -> None:
+    try:
+        _SMS_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SMS_STATS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_SMS_STATS_FILE)
+    except Exception as exc:
+        logger.warning(f"[SMS] 保存本地成功率埋点失败（不影响主流程）：{exc}")
+
+
+def record_sms_result(country: str, ok: bool) -> None:
+    """记录一次接码结果（成功/失败），供 auto 排序成功率使用。"""
+    country = str(country or "").strip()
+    if not country:
+        return
+    with _SMS_STATS_LOCK:
+        stats = _load_sms_stats()
+        entry = stats.setdefault(country, {"success": 0, "failed": 0})
+        key = "success" if ok else "failed"
+        entry[key] = int(entry.get(key, 0) or 0) + 1
+        _save_sms_stats(stats)
+
+
+def local_country_success_rates() -> dict[str, float]:
+    """本地埋点成功率：{country: success/(success+failed)}。"""
+    stats = _load_sms_stats()
+    rates: dict[str, float] = {}
+    for country, entry in stats.items():
+        if not isinstance(entry, dict):
+            continue
+        success = int(entry.get("success", 0) or 0)
+        failed = int(entry.get("failed", 0) or 0)
+        total = success + failed
+        if total > 0:
+            rates[str(country)] = success / total
+    return rates
+
+
+def _top_countries_from_api() -> list[str]:
+    """getTopCountriesByService 解析，兼容两种常见返回格式：
+
+    - 扁平：{"54": 100, "73": 50}（country → count）
+    - 嵌套（sms-online/GrizzlySMS 风格）：{"0": {"country": 54, "count": 100}}，
+      外层是数字序号，国家码在 "country" 字段
+    """
+    data = _grizzly_json_action("getTopCountriesByService")
+    ordered = []
+    for key, val in (data or {}).items():
+        if isinstance(val, (int, float)) and val > 0:
+            ordered.append((str(key), val))
+        elif isinstance(val, dict):
+            country = val.get("country")
+            count = val.get("count")
+            if isinstance(count, (int, float)) and count > 0 and country is not None:
+                ordered.append((str(country), count))
+    ordered.sort(key=lambda item: item[1], reverse=True)
+    return [country for country, _ in ordered]
+
+
+def _success_rates_for_auto() -> dict[str, float]:
+    """auto 排序用成功率：本地埋点优先，无历史国家用平台热门兜底（冷启动给中性值）。"""
+    rates = local_country_success_rates()
+    try:
+        top = _top_countries_from_api()
+    except Exception as exc:
+        logger.warning(f"[SMS] 拉取热门国家失败（冷启动兜底不可用）：{exc}")
+        top = []
+    for country in top:
+        rates.setdefault(country, 0.5)
+    return rates
+
+
+def _auto_sorted_country_queue(sort: str) -> list[str]:
+    if _provider() != "grizzly":
+        return _manual_country_queue()
+    prices, status = _fetch_price_info()
+    rates = _success_rates_for_auto()
+    candidates = []
+    for country, available in status.items():
+        rate = rates.get(country)
+        if rate is None or rate < _MIN_SUCCESS_RATE:
+            continue
+        candidates.append({
+            "country": country,
+            "price": prices.get(country, float("inf")),
+            "success": rate,
+        })
+    if sort == "auto_success":
+        candidates.sort(key=lambda c: (-c["success"], c["price"]))
+    else:
+        candidates.sort(key=lambda c: (c["price"], -c["success"]))
+    return [c["country"] for c in candidates] or _manual_country_queue()
+
+
+def resolve_country_queue(prefer: str | None = None, sort: str | None = None) -> list[str]:
+    """生成有序去重的国家优先级队列。
+
+    sort:
+        "manual"       = SMS_COUNTRY(主) + SMS_FALLBACK_COUNTRIES(备选) 去重
+        "auto_price"   = 价格升序(主) + 成功率降序(次)，过滤 0 库存/低成功率国家
+        "auto_success" = 成功率优先(主) + 价格兜底(次)
+    为空或省略时读配置 SMS_COUNTRY_SORT。API 拉取失败自动回落 manual。
+    prefer 非空时前置到队列头（去重），优先级最高。
+    """
+    sort = (
+        str(sort or "").strip().lower()
+        or str(getattr(_cfg, "SMS_COUNTRY_SORT", "") or "").strip().lower()
+    )
+    if sort in ("auto_price", "auto_success"):
+        try:
+            queue = _auto_sorted_country_queue(sort)
+        except Exception as exc:
+            logger.warning(f"[SMS] 国家排序（{sort}）拉取失败，回落 manual 队列：{exc}")
+            queue = _manual_country_queue()
+    else:
+        queue = _manual_country_queue()
+    return _prepend_prefer(queue, prefer)

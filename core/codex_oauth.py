@@ -982,9 +982,9 @@ def _do_phone_verification(session: BrowserSession) -> None:
     http = sms_provider._http()
     max_retries = _cfg.SMS_MAX_RETRIES
     provider = _sms_provider_name()
-    # SMS 取号地区：墨西哥(54) → 安哥拉(76) → 巴西(73) → 哥伦比亚(33)
-    # 优先墨西哥和安哥拉，不用美国(187)/英国(86)（太贵）
-    country_queue = ["54", "76", "73", "33"]
+    # 国家优先级队列：manual=配置(SMS_COUNTRY+备选)，auto_*=价格/成功率排序；
+    # iCloud 工作流选中的国家由 sms_provider 前置到队列头。
+    country_queue = sms_provider.resolve_country_queue()
     country_idx = 0
     try:
         last_err = None
@@ -1014,8 +1014,9 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
                     )
                     sms_provider.cancel(activation_id, http)
+                    sms_provider.record_sms_result(country, False)
                     # 果断换号策略：
-                    #   whatsapp_channel → 该国家号码走 WhatsApp 无法接码，切到下一个国家（巴西→哥伦比亚→安哥拉）
+                    #   whatsapp_channel → 该国家号码走 WhatsApp 无法接码，切到队列下一个国家
                     #   phone_used_or_max → 该号码已被 OpenAI 使用，同样切国家拿新号
                     #   invalid_phone    → 号码格式问题，切国家
                     if send_reason in ("whatsapp_channel", "phone_used_or_max", "invalid_phone"):
@@ -1042,6 +1043,7 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 except sms_provider.SmsCodeTimeout:
                     logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
                     sms_provider.cancel(activation_id, http)
+                    sms_provider.record_sms_result(country, False)
                     # 短信超时多半是号码实际走了 WhatsApp 通道收不到码，果断切下一个国家
                     if country_idx + 1 < len(country_queue):
                         country_idx += 1
@@ -1067,11 +1069,13 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"{val_text[:240]}，换号重试"
                     )
                     sms_provider.cancel(activation_id, http)
+                    sms_provider.record_sms_result(country, False)
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
 
                 # 成功
                 sms_provider.complete(activation_id, http)
+                sms_provider.record_sms_result(country, True)
                 logger.info("[Codex] 手机号验证通过")
                 return
 
@@ -1094,6 +1098,7 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 logger.warning(f"[Codex] 接码尝试 {attempt} 失败：{exc}")
                 if activation_id:
                     sms_provider.cancel(activation_id, http)
+                    sms_provider.record_sms_result(country, False)
                 _sleep_before_phone_retry(attempt, max_retries)
                 continue
 

@@ -1144,9 +1144,9 @@ def _do_phone_verification_if_present(driver) -> None:
             return
 
         last_err = None
-        # 取号国家队列：墨西哥(54) → 安哥拉(76) → 巴西(73) → 哥伦比亚(33)
-        # 巴西号 OpenAI 常强制 WhatsApp 通道收不到码，故墨西哥/安哥拉优先。
-        country_queue = ["54", "76", "73", "33"]
+        # 国家优先级队列：manual=配置(SMS_COUNTRY+备选)，auto_*=价格/成功率排序；
+        # iCloud 工作流选中的国家由 sms_provider 前置到队列头。
+        country_queue = sms_provider.resolve_country_queue()
         country_idx = 0
         for attempt in range(1, max_retries + 1):
             activation_id = None
@@ -1192,6 +1192,7 @@ def _do_phone_verification_if_present(driver) -> None:
                 otp_outcome = _wait_after_phone_otp_submit(driver, timeout=25)
                 logger.info("[Codex][Browser] 手机 OTP 提交后状态：%s", otp_outcome)
                 sms_provider.complete(activation_id, http)
+                sms_provider.record_sms_result(country, True)
                 return
             except Exception as exc:
                 last_err = exc
@@ -1202,6 +1203,7 @@ def _do_phone_verification_if_present(driver) -> None:
                         sms_provider.cancel(activation_id, http)
                     except Exception:
                         pass
+                    sms_provider.record_sms_result(country, False)
                 # 余额不足 / 无可用号码：重试多少次都不会成功，立即失败止损，
                 # 避免白等 N 轮换号重试（每轮还要刷新页面 + 随机等待）。
                 if any(k in err_text for k in (

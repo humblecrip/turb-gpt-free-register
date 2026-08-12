@@ -20,9 +20,9 @@ iCloud 工作流编排服务：领别名 → 注册 → 接码 → Codex 补跑 
         core.codex_oauth.upload_cpa_auth_file
 
 注意：
-    - start(country=...) 会临时覆盖 config.codex.SMS_COUNTRY，批次结束/停止时恢复；
-      protocol/roxy 驱动内部使用自带国家队列，覆盖主要用于 browser_use 驱动与
-      sms_provider.acquire_number 的默认值。
+    - start(country=...) 会临时覆盖 config.codex.SMS_COUNTRY，并把这个国家前置到
+      接码国家队列头（sms_provider 全局 prefer，优先级最高），批次结束/停止时恢复；
+      其余队列按配置 SMS_COUNTRY_SORT 决定（manual / auto_price / auto_success）。
     - 单号重试：failed/stopped/paused 的 job 重新入队，已领别名/已注册的 job 从
       断点继续（不重复领别名/注册）。
 """
@@ -194,9 +194,11 @@ def _apply_sms_country(country: str) -> None:
         return
     try:
         from config import codex as _cfg
+        from core import sms_provider
         _ORIG_SMS_COUNTRY = getattr(_cfg, "SMS_COUNTRY", "") or ""
         _cfg.SMS_COUNTRY = country
-        logger.info("[iCloud工作流] 临时覆盖 SMS_COUNTRY=%s（原=%s）", country, _ORIG_SMS_COUNTRY or "默认")
+        sms_provider.set_country_prefer(country)
+        logger.info("[iCloud工作流] 临时覆盖 SMS_COUNTRY=%s（原=%s），并前置到国家队列", country, _ORIG_SMS_COUNTRY or "默认")
     except Exception as exc:
         logger.warning("[iCloud工作流] SMS_COUNTRY 覆盖失败: %s", exc)
 
@@ -207,7 +209,9 @@ def _restore_sms_country() -> None:
         return
     try:
         from config import codex as _cfg
+        from core import sms_provider
         _cfg.SMS_COUNTRY = _ORIG_SMS_COUNTRY
+        sms_provider.set_country_prefer(None)
         logger.info("[iCloud工作流] 已恢复 SMS_COUNTRY=%s", _ORIG_SMS_COUNTRY or "默认")
     except Exception:
         pass

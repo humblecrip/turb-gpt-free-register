@@ -566,7 +566,15 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "SMS_COUNTRY", "file": "codex.py", "type": "str", "group": "接码平台",
-        "label": "国家代码", "help": "传给接码平台的 country；GrizzlySMS 常用：美国=187；H 通道作为 H_API.md 的 country",
+        "label": "国家代码", "help": "国家队列第一个；传给接码平台的 country。GrizzlySMS 常用：美国=187；H 通道作为 H_API.md 的 country",
+    },
+    {
+        "key": "SMS_FALLBACK_COUNTRIES", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "备选国家队列", "help": "逗号分隔（如 33,76），主国家无号时按顺序依次尝试；配合 SMS_COUNTRY 组成手动队列",
+    },
+    {
+        "key": "SMS_COUNTRY_SORT", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "国家排序策略", "help": "manual=手动队列（SMS_COUNTRY+备选）；auto_price=价格升序+成功率降序；auto_success=成功率优先+价格兜底",
     },
     {
         "key": "SMS_SERVICE", "file": "codex.py", "type": "str", "group": "接码平台",
