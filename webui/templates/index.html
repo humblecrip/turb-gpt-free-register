@@ -2400,6 +2400,17 @@
     <section class="jobs-panel-v2" id="jobsPanelV2" aria-label="注册任务">
       <div class="jobs-toolbar-v2" id="jobsToolbarV2">
         <button type="button" class="jobs-tb-btn jobs-tb-btn--retry" id="btnRetrySelectedJobsV2" disabled title="重试选中的失败、已停止或已取消任务">重试选中</button>
+        <label class="jobs-tb-field" title="重试任务的接码国家：手动队列按配置 SMS_COUNTRY+备选；价格优先/成功率优先覆盖排序策略；具体国家前置到队列头。只对本次重试生效。">接码国家
+          <select id="smsCountryRetryJobsV2">
+            <option value="">手动队列（配置）</option>
+            <option value="auto_price">价格优先</option>
+            <option value="auto_success">成功率优先</option>
+            <option value="54">墨西哥 (54)</option>
+            <option value="73">巴西 (73)</option>
+            <option value="33">哥伦比亚 (33)</option>
+            <option value="76">安哥拉 (76)</option>
+          </select>
+        </label>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
         <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消全部排队</button>
         <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
@@ -2514,6 +2525,17 @@
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">Codex</span>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补跑</button>
+          <label class="acc-v2-inline" title="补跑 Codex 的接码国家：手动队列按配置 SMS_COUNTRY+备选；价格优先/成功率优先覆盖排序策略；具体国家前置到队列头。只对本次补跑生效。">接码
+            <select id="smsCountryRetryCodexV2">
+              <option value="">手动队列（配置）</option>
+              <option value="auto_price">价格优先</option>
+              <option value="auto_success">成功率优先</option>
+              <option value="54">墨西哥 (54)</option>
+              <option value="73">巴西 (73)</option>
+              <option value="33">哥伦比亚 (33)</option>
+              <option value="76">安哥拉 (76)</option>
+            </select>
+          </label>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载CPA</button>
           <button type="button" class="jobs-tb-btn" id="btnCpaAlignV2" title="对比本地账号池与 CPA auth-files：有效/失效/未上CPA/仅CPA（含实际 401 探测）">CPA对齐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止</button>
@@ -2653,6 +2675,17 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnCodexDeleteBulkV2" disabled title="删除选中的本地 Codex JSON 凭证文件">删除选中</button>
         <button type="button" class="jobs-tb-btn" id="btnScanCpaDeadV2" title="扫描 CPA 侧失效（disabled/error/unavailable/高失败）的 codex 凭证，仅展示不删除">扫描失效</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnReauthCpaDeadV2" title="对扫描出的失效号重新上号：删 CPA 失效凭证 → 复用原邮箱补跑 OAuth → 新凭证自动回传 CPA（每个号消耗 1 OTP + 1 接码短信）">重上失效号</button>
+        <label class="jobs-tb-field" title="重上号的接码国家：手动队列按配置 SMS_COUNTRY+备选；价格优先/成功率优先覆盖排序策略；具体国家前置到队列头。只对本次重上生效。">接码国家
+          <select id="smsCountryReauthV2">
+            <option value="">手动队列（配置）</option>
+            <option value="auto_price">价格优先</option>
+            <option value="auto_success">成功率优先</option>
+            <option value="54">墨西哥 (54)</option>
+            <option value="73">巴西 (73)</option>
+            <option value="33">哥伦比亚 (33)</option>
+            <option value="76">安哥拉 (76)</option>
+          </select>
+        </label>
       </div>
       <div id="cpaDeadPanelV2" class="cpa-dead-panel">
         <div class="cpa-dead-header">
@@ -3169,6 +3202,16 @@ async function loadSummary() {
 }
 
 // ---------- 注册 / 任务 ----------
+function smsCountryParamsFrom(selectId) {
+  const v = ($(selectId)?.value || '').trim();
+  if (v === 'auto_price' || v === 'auto_success') return {sms_country: '', sms_sort: v};
+  if (v) return {sms_country: v, sms_sort: ''};
+  return {sms_country: '', sms_sort: ''};
+}
+function smsCountryLabel(selectId) {
+  const sel = $(selectId);
+  return (sel && sel.selectedOptions && sel.selectedOptions[0]) ? sel.selectedOptions[0].textContent.trim() : '手动队列（配置）';
+}
 async function startRegistrationFromInputs(countEl, workersEl, startBtn) {
   const count = parseInt((countEl?.value || '1'), 10);
   const workers = parseInt((workersEl?.value || '3'), 10);
@@ -3550,14 +3593,15 @@ async function retryJob(jobId, btn) {
 
 async function retrySelectedJobs() {
   const ids = Array.from(JOB_SELECTED);
-  if (!confirm(`确定重试选中的 ${ids.length} 个任务吗？\n\n后端会逐条校验；已创建账号的任务只补跑 Codex，其余任务重新入队注册，不能重试的会自动跳过。`)) return;
+  const sms = smsCountryParamsFrom('smsCountryRetryJobsV2');
+  if (!confirm(`确定重试选中的 ${ids.length} 个任务吗？\n\n后端会逐条校验；已创建账号的任务只补跑 Codex，其余任务重新入队注册，不能重试的会自动跳过。\n\n接码国家：${smsCountryLabel('smsCountryRetryJobsV2')}。`)) return;
   const btn = $('#btnRetrySelectedJobsV2');
   if (btn) btn.disabled = true;
   try {
     const r = await api('/api/jobs/retry-bulk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({job_ids: ids}),
+      body: JSON.stringify({job_ids: ids, sms_country: sms.sms_country, sms_sort: sms.sms_sort}),
     });
     ids.forEach(id => JOB_SELECTED.delete(Number(id)));
     const skippedCount = (r.skipped || []).length;
@@ -5172,12 +5216,14 @@ async function retrySelectedCodex() {
   const workers = getCodexBulkWorkers();
   const workersElV2 = $('#codexBulkWorkersV2');
   if (workersElV2) workersElV2.value = workers;
+  const sms = smsCountryParamsFrom('smsCountryRetryCodexV2');
   const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const retryingCount = selectedAccounts.filter(a => (a.codex_status || '') === 'retrying').length;
   const deactivatedCount = selectedAccounts.filter(a => (a.codex_status || '') === 'deactivated').length;
   let msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
 
 并发线程数：${workers}
+接码国家：${smsCountryLabel('smsCountryRetryCodexV2')}
 
 将按账号消耗邮箱 OTP 和接码短信。`;
   if (retryingCount || deactivatedCount) msg += `
@@ -5191,7 +5237,7 @@ async function retrySelectedCodex() {
     const r = await api('/api/codex/retry-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, workers}),
+      body: JSON.stringify({account_ids: ids, workers, sms_country: sms.sms_country, sms_sort: sms.sms_sort}),
     });
     const skippedCount = (r.skipped || []).length;
     showToast(skippedCount ? `已开始 ${r.started_count || 0} 个，跳过 ${skippedCount} 个` : (r.message || '已开始批量补跑'));
@@ -5818,11 +5864,12 @@ function _selectedDeadEmails() {
 async function reauthCpaDead() {
   const emails = _selectedDeadEmails();
   if (!emails.length) { showToast('请先勾选要重上的失效号'); return; }
-  if (!confirm(`对 ${emails.length} 个失效号重新上号？\n\n${emails.map(e => '  • ' + e).join('\n')}\n\n每个号将：\n  • 删除 CPA 失效凭证\n  • 复用原邮箱重新走 Codex OAuth（消耗 1 封 OTP + 1 个接码短信，约 $0.13）\n\n在后台执行，完成后新凭证自动回传 CPA。`)) return;
+  const sms = smsCountryParamsFrom('smsCountryReauthV2');
+  if (!confirm(`对 ${emails.length} 个失效号重新上号？\n\n${emails.map(e => '  • ' + e).join('\n')}\n\n每个号将：\n  • 删除 CPA 失效凭证\n  • 复用原邮箱重新走 Codex OAuth（消耗 1 封 OTP + 1 个接码短信，约 $0.13）\n\n接码国家：${smsCountryLabel('smsCountryReauthV2')}。\n\n在后台执行，完成后新凭证自动回传 CPA。`)) return;
   const btn = document.getElementById('btnReauthCpaDeadV2');
   if (btn) btn.disabled = true;
   try {
-    const r = await api('/api/cpa/reauth/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ emails }) });
+    const r = await api('/api/cpa/reauth/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ emails, sms_country: sms.sms_country, sms_sort: sms.sms_sort }) });
     showToast(r.message || '已开始重上号');
     _pollCpaReauthStatus();
   } catch(err) {

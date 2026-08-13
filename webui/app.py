@@ -44,6 +44,19 @@ def _pool_source_arg(default: str = "outlook") -> str:
     return src if src in ("all", "outlook", "generic_api", "cloudflare_domain") else default
 
 
+def _sms_params_from_data(data: dict) -> tuple[str | None, str | None]:
+    """从 POST body 解析按次接码参数 sms_country / sms_sort。
+
+    sms_sort 只允许 manual / auto_price / auto_success（空串归一化为 None，走全局配置）。
+    非法值抛 ValueError，调用方转 HTTP 400。
+    """
+    sms_country = str(data.get("sms_country") or "").strip() or None
+    sms_sort = str(data.get("sms_sort") or "").strip().lower() or None
+    if sms_sort not in (None, "manual", "auto_price", "auto_success"):
+        raise ValueError(f"不支持的接码排序策略: {sms_sort}")
+    return sms_country, sms_sort
+
+
 def _with_pool_source(rows: list[dict], source: str) -> list[dict]:
     out = []
     for r in rows:
@@ -1873,10 +1886,20 @@ def create_app(auth_code: str | None = None) -> Flask:
     def _release_codex_retry(email: str) -> None:
         codex_retry_service.release(email)
 
-    def _run_codex_retry_worker(email: str, *, batch_label: str | None = None, clear_log: bool = True) -> None:
-        """执行一个账号的 Codex 补跑。调用前必须已经 reserve。"""
-        codex_retry_service.run_worker(email, batch_label=batch_label, clear_log=clear_log)
+    def _run_codex_retry_worker(email: str, *, batch_label: str | None = None, clear_log: bool = True,
+                                sms_country: str | None = None, sms_sort: str | None = None) -> None:
+        """执行一个账号的 Codex 补跑。调用前必须已经 reserve。
 
+        sms_country / sms_sort 为本次补跑的按次接码参数（只对本线程生效，结束清理）；
+        不带时走全局配置。
+        """
+        from core import sms_provider
+        if sms_country or sms_sort:
+            sms_provider.set_task_sms_override(sms_country, sms_sort)
+        try:
+            codex_retry_service.run_worker(email, batch_label=batch_label, clear_log=clear_log)
+        finally:
+            sms_provider.clear_task_sms_override()
 
     @app.post("/api/codex/stop")
     def api_codex_stop():
@@ -1976,8 +1999,12 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/codex/retry")
     def api_codex_retry():
-        """手动补跑某账号的 Codex 授权。Body {email}。"""
+        """手动补跑某账号的 Codex 授权。Body {email, sms_country?, sms_sort?}。"""
         data = request.get_json(silent=True) or {}
+        try:
+            sms_country, sms_sort = _sms_params_from_data(data)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         email = (data.get("email") or "").strip()
         if not email:
             return jsonify({"ok": False, "error": "email 为空"}), 400
@@ -1992,7 +2019,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         db.update_account_codex_status(email, "retrying", None)
         threading.Thread(
             target=_run_codex_retry_worker,
-            kwargs={"email": email, "clear_log": True},
+            kwargs={"email": email, "clear_log": True, "sms_country": sms_country, "sms_sort": sms_sort},
             name=f"codex-retry-{email}",
             daemon=True,
         ).start()
@@ -2000,11 +2027,15 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/codex/retry-bulk")
     def api_codex_retry_bulk():
-        """批量补跑 Codex。Body {account_ids:[...], workers: 1-16}。"""
+        """批量补跑 Codex。Body {account_ids:[...], workers: 1-16, sms_country?, sms_sort?}。"""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from datetime import datetime as _dt
 
         data = request.get_json(silent=True) or {}
+        try:
+            sms_country, sms_sort = _sms_params_from_data(data)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         ids = data.get("account_ids") or data.get("ids") or []
         workers = data.get("workers", 1)
         if not isinstance(ids, list) or not ids:
@@ -2058,10 +2089,10 @@ def create_app(auth_code: str | None = None) -> Flask:
                 encoding="utf-8",
             )
 
-        def _bulk_runner(items: list[dict], max_workers: int, batch: str):
+        def _bulk_runner(items: list[dict], max_workers: int, batch: str, sms_country: str | None, sms_sort: str | None):
             logger.info(f"[Codex 批量补跑] 启动 batch={batch} count={len(items)} workers={max_workers}")
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"codex-bulk-{batch}") as ex:
-                futures = [ex.submit(_run_codex_retry_worker, it["email"], batch_label=f"{batch} #{idx}/{len(items)}", clear_log=False) for idx, it in enumerate(items, 1)]
+                futures = [ex.submit(_run_codex_retry_worker, it["email"], batch_label=f"{batch} #{idx}/{len(items)}", clear_log=False, sms_country=sms_country, sms_sort=sms_sort) for idx, it in enumerate(items, 1)]
                 for fut in as_completed(futures):
                     try:
                         fut.result()
@@ -2071,7 +2102,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
         threading.Thread(
             target=_bulk_runner,
-            args=(selected, workers, batch_id),
+            args=(selected, workers, batch_id, sms_country, sms_sort),
             name=f"codex-bulk-dispatch-{batch_id}",
             daemon=True,
         ).start()
@@ -2132,7 +2163,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/cpa/reauth/run")
     def api_cpa_reauth_run():
-        """对选中的失效号重新上号。Body {emails:[...], delete_first?:bool, workers?:int}。
+        """对选中的失效号重新上号。Body {emails:[...], delete_first?:bool, workers?:int, sms_country?, sms_sort?}。
 
         流程：可选先删 CPA 失效凭证 → 复用原邮箱补跑 Codex OAuth（force=True）。
         补跑成功后新凭证经 CPA callback 自动回传 CPA auth-files，并落盘本地 codex_accounts/。
@@ -2142,6 +2173,10 @@ def create_app(auth_code: str | None = None) -> Flask:
         from core import cpa_reauth
 
         data = request.get_json(silent=True) or {}
+        try:
+            sms_country, sms_sort = _sms_params_from_data(data)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         emails = data.get("emails") or data.get("email") or []
         if isinstance(emails, str):
             emails = [emails]
@@ -2193,6 +2228,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                 workers=workers,
                 cpa_names=cpa_names,
                 callback=None,
+                sms_country=sms_country,
+                sms_sort=sms_sort,
             )
             with _CPA_REAUTH_LOCK:
                 _CPA_REAUTH_STATE.update({
@@ -2546,20 +2583,24 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/jobs/<int:job_id>/retry")
     def api_job_retry(job_id: int):
-        """重试失败/停止/取消任务；服务端自动判断完整注册或 Codex 补跑。"""
+        """重试失败/停止/取消任务；服务端自动判断完整注册或 Codex 补跑。Body {workers?, sms_country?, sms_sort?}。"""
         data = request.get_json(silent=True) or {}
         try:
             workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
-        result = svc.retry_job(job_id, workers=workers)
+        try:
+            sms_country, sms_sort = _sms_params_from_data(data)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        result = svc.retry_job(job_id, workers=workers, sms_country=sms_country, sms_sort=sms_sort)
         if not result.get("ok"):
             return jsonify(result), int(result.get("status") or 400)
         return jsonify(result)
 
     @app.post("/api/jobs/retry-bulk")
     def api_jobs_retry_bulk():
-        """批量重试任务；不支持项逐条跳过并返回原因。"""
+        """批量重试任务；不支持项逐条跳过并返回原因。Body {job_ids:[...], workers?, sms_country?, sms_sort?}。"""
         data = request.get_json(silent=True) or {}
         job_ids = data.get("job_ids") or data.get("ids") or []
         if not isinstance(job_ids, list) or not job_ids:
@@ -2570,6 +2611,10 @@ def create_app(auth_code: str | None = None) -> Flask:
             workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
+        try:
+            sms_country, sms_sort = _sms_params_from_data(data)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
         started: list[dict] = []
         reused: list[dict] = []
@@ -2584,7 +2629,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             if one_id in seen:
                 continue
             seen.add(one_id)
-            result = svc.retry_job(one_id, workers=workers)
+            result = svc.retry_job(one_id, workers=workers, sms_country=sms_country, sms_sort=sms_sort)
             if not result.get("ok"):
                 skipped.append({"id": one_id, "reason": result.get("error") or "不能重试"})
             elif result.get("reused"):

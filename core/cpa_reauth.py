@@ -340,6 +340,17 @@ def _run_one_reauth(
         return result
 
 
+def _run_one_reauth_with_sms_override(email: str, sms_country: str | None, sms_sort: str | None, **kwargs) -> dict:
+    """线程内包装：设置/清理本次重上号的按次接码覆盖，保证补跑接码按本次参数选国家。"""
+    from core import sms_provider
+    if sms_country or sms_sort:
+        sms_provider.set_task_sms_override(sms_country, sms_sort)
+    try:
+        return _run_one_reauth(email, **kwargs)
+    finally:
+        sms_provider.clear_task_sms_override()
+
+
 def run_reauth_pipeline(
     emails: list[str],
     *,
@@ -348,6 +359,8 @@ def run_reauth_pipeline(
     max_total: int = 50,
     cpa_names: dict[str, str] | None = None,
     callback: Callable[[dict], None] | None = None,
+    sms_country: str | None = None,
+    sms_sort: str | None = None,
 ) -> dict:
     """批量重新上号编排。
 
@@ -358,6 +371,8 @@ def run_reauth_pipeline(
         max_total: 单次最多处理的号数（防手滑全量打爆接码）。
         cpa_names: {email: cpa_name}，删除时用列表里的完整 name。
         callback: 每完成一个号回调(result dict)。
+        sms_country / sms_sort: 按次接码参数，只对本次重上号 worker 线程生效；
+            不带时走全局配置。
 
     Returns: {ok, started:[...], skipped:[(email,reason)], batch_id, results:[...]}
     """
@@ -396,8 +411,10 @@ def run_reauth_pipeline(
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"cpa-reauth-{batch_id}") as ex:
         futures = {
             ex.submit(
-                _run_one_reauth,
+                _run_one_reauth_with_sms_override,
                 email,
+                sms_country,
+                sms_sort,
                 delete_first=delete_first,
                 cpa_name=(cpa_names or {}).get(email),
                 batch_id=batch_id,

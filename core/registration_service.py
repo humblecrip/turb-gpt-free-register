@@ -403,6 +403,16 @@ def _run_one_job(job_id: int, log_file: str) -> None:
 def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int) -> None:
     """把 Codex 补跑作为标准任务执行，并复用任务状态、日志和停止入口。"""
     _activate_job(job_id)
+
+    # 应用本次任务的按次接码国家/排序覆盖（只对本线程生效，_deactivate_job 清理）
+    options = _JOB_OPTIONS.get(int(job_id)) or {}
+    if options.get("sms_country") or options.get("sms_sort"):
+        try:
+            from core import sms_provider
+            sms_provider.set_task_sms_override(options.get("sms_country"), options.get("sms_sort"))
+        except Exception:
+            logger.exception(f"[Job {job_id}] 设置接码国家/排序覆盖失败")
+
     current = db.get_job(job_id)
     if not current or current.get("status") == "cancelled":
         codex_retry_service.release(email)
@@ -583,8 +593,23 @@ def get_retry_info(job: dict) -> dict:
     return info
 
 
-def retry_job(job_id: int, workers: int | None = None) -> dict:
-    """智能重试终态任务：未生成账号则重新注册，已有账号则仅补跑 Codex。"""
+def retry_job(
+    job_id: int,
+    workers: int | None = None,
+    sms_country: str | None = None,
+    sms_sort: str | None = None,
+) -> dict:
+    """智能重试终态任务：未生成账号则重新注册，已有账号则仅补跑 Codex。
+
+    sms_country / sms_sort 只对本次重试任务生效（同 submit_registration）：worker 补跑
+    Codex 接码时把 sms_country 前置到国家队列头、用 sms_sort 覆盖排序策略，任务结束自动
+    恢复。不带参数时走全局配置（向后兼容）。
+    """
+    sms_country = str(sms_country or "").strip() or None
+    sms_sort = str(sms_sort or "").strip().lower() or None
+    if sms_sort not in (None, "manual", "auto_price", "auto_success"):
+        return {"ok": False, "error": f"不支持的接码排序策略: {sms_sort}", "status": 400}
+
     source = db.get_job(job_id)
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
@@ -639,6 +664,13 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
     try:
         if action == "codex":
             db.update_account_codex_status(email, "retrying", None)
+        # 本次重试任务的按次接码参数写入 _JOB_OPTIONS，worker 线程开始时应用
+        if sms_country or sms_sort:
+            _JOB_OPTIONS[int(job["id"])] = {
+                "email_source": None,
+                "sms_country": sms_country,
+                "sms_sort": sms_sort,
+            }
         with _executor_lock:
             executor = get_executor(max_workers=workers)
             if action == "codex":
@@ -646,6 +678,7 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
             else:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
     except Exception as exc:
+        _JOB_OPTIONS.pop(int(job["id"]), None)
         if reserved_codex:
             codex_retry_service.release(email)
             db.update_account_codex_status(email, "failed", f"队列提交失败：{type(exc).__name__}: {exc}"[:500])
