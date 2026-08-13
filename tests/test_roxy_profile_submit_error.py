@@ -52,6 +52,47 @@ class DetectProfileSubmitErrorTests(unittest.TestCase):
             err = roxy_registration._detect_profile_submit_error(driver)
         self.assertIsNotNone(err)
 
+    def test_ignores_thinking_text_in_errors_array(self):
+        """回归：正常页面元素（class 含 error 的「思考」）不得被误判为错误。"""
+        driver = Mock()
+        with patch.object(roxy_registration, "_email_otp_page_state", return_value=self._state(errors=["思考"])):
+            self.assertIsNone(roxy_registration._detect_profile_submit_error(driver))
+
+    def test_ignores_normal_cn_words_in_errors_array(self):
+        driver = Mock()
+        with patch.object(roxy_registration, "_email_otp_page_state", return_value=self._state(errors=["思考中", "请稍候", "正在加载"])):
+            self.assertIsNone(roxy_registration._detect_profile_submit_error(driver))
+
+    def test_detects_unsupported_email_in_errors_array(self):
+        driver = Mock()
+        with patch.object(roxy_registration, "_email_otp_page_state", return_value=self._state(errors=["unsupported_email"])):
+            err = roxy_registration._detect_profile_submit_error(driver)
+        self.assertIsNotNone(err)
+
+    def test_detects_not_supported_in_errors_array(self):
+        driver = Mock()
+        with patch.object(roxy_registration, "_email_otp_page_state", return_value=self._state(errors=["The email address you entered is not supported"])):
+            err = roxy_registration._detect_profile_submit_error(driver)
+        self.assertIsNotNone(err)
+
+    def test_detects_invalid_email_in_errors_array(self):
+        driver = Mock()
+        with patch.object(roxy_registration, "_email_otp_page_state", return_value=self._state(errors=["invalid email address"])):
+            err = roxy_registration._detect_profile_submit_error(driver)
+        self.assertIsNotNone(err)
+
+    def test_ignores_fuzzy_generic_error_words_in_body_text(self):
+        """回归：模糊通用词（出错了/发生错误）不再仅凭 body 文本判定为错误。"""
+        driver = Mock()
+        with patch.object(roxy_registration, "_email_otp_page_state", return_value=self._state(text="页面出错了，请稍后再试")):
+            self.assertIsNone(roxy_registration._detect_profile_submit_error(driver))
+
+    def test_detects_error_code_in_body_text(self):
+        driver = Mock()
+        with patch.object(roxy_registration, "_email_otp_page_state", return_value=self._state(text="不明なエラーが発生しました error_code: e_1")):
+            err = roxy_registration._detect_profile_submit_error(driver)
+        self.assertIsNotNone(err)
+
     def test_returns_none_when_snapshot_has_js_error(self):
         driver = Mock()
         with patch.object(roxy_registration, "_email_otp_page_state", return_value={"url": "", "error": "TimeoutException: msg"}):

@@ -16,6 +16,7 @@ codex_retry_service），不碰网络与浏览器。
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from core import icloud_workflow_service as svc
@@ -285,10 +286,14 @@ class IcloudWorkflowAliasPoolStatusTests(unittest.TestCase):
             {"id": "acc_1", "alias_total": 15, "alias_active": 12},
             {"id": "acc_2", "alias_total": 8, "alias_active": 8},
         ]
+        # created_at 用当天动态生成，避免硬编码日期跨天失败（today_created 按当天比对）。
+        # 保持原语义：每账号返回的同一 aliases 列表里今天创建 1 条（a），2 个账号 → 2。
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         aliases = {
             "aliases": [
-                {"email": "a@icloud.com", "created_at": "2026-08-12T10:00:00Z"},
-                {"email": "b@icloud.com", "created_at": "2026-08-11T10:00:00Z"},
+                {"email": "a@icloud.com", "created_at": f"{today}T10:00:00Z"},
+                {"email": "b@icloud.com", "created_at": f"{yesterday}T10:00:00Z"},
             ]
         }
         with patch("core.icloud_hme_client._request", side_effect=[accounts, aliases, aliases]) as mock_req:

@@ -1913,7 +1913,10 @@ def _detect_profile_submit_error(driver) -> str | None:
     """资料页提交后检测页面是否出现错误提示。
 
     主要识别 OpenAI 拒绝邮箱域名的 unsupported_email（含多语言文案），
-    以及页面可见的表单错误。返回错误描述；无错误/检测失败返回 None。
+    以及页面可见的高置信度表单错误。返回错误描述；无错误/检测失败返回 None。
+
+    策略：宁可漏报（继续走 WARNING_BANNER 超时兜底），不可误报杀掉正常注册。
+    errors 数组只匹配明确错误关键词，避免把正常元素文本（如「思考」）误当错误。
     """
     try:
         state = _email_otp_page_state(driver)
@@ -1933,19 +1936,24 @@ def _detect_profile_submit_error(driver) -> str | None:
             return label
     for err in state.get("errors") or []:
         err_text = str(err).strip()
-        if err_text:
-            return f"页面错误提示: {err_text[:200]}"
-    for marker, label in (
-        ("不明なエラー", "页面出现未知错误"),
-        ("エラーが発生", "页面出现错误"),
-        ("error_code:", "页面返回错误码"),
-        ("something went wrong", "页面出现未知错误"),
-        ("an error occurred", "页面出现未知错误"),
-        ("发生错误", "页面出现错误"),
-        ("出错了", "页面出现错误"),
-    ):
-        if marker in text_lower:
-            return label
+        if not err_text:
+            continue
+        err_lower = err_text.lower()
+        for marker in (
+            "unsupported_email",
+            "unsupported email",
+            "not supported",
+            "サポートされていません",
+            "不支持的邮箱",
+            "未支持的邮箱",
+            "error_code:",
+            "invalid email",
+            "invalid",
+        ):
+            if marker in err_lower:
+                return f"页面错误提示: {err_text[:200]}"
+    if "error_code:" in text_lower:
+        return "页面返回错误码"
     return None
 
 
