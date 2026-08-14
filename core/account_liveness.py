@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
-"""已注册账号查活：重新邮箱 OTP 登录，成功拿到最新 ChatGPT accessToken 即视为正常。"""
+"""已注册账号查活：优先轻量 token 探测，失效/不确定再完整重新登录。
+
+- light：用账号库现有 access_token 打套餐查询接口探测（不重新登录、不烧 OTP）
+- full：完整重新邮箱 OTP 登录，成功拿到最新 ChatGPT accessToken 即视为正常
+- auto：先 light，live/deactivated 直接返回，failed（不确定）降级 full 确认
+"""
 import logging
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
+from core import db
 from core.session import BrowserSession
+from core.chatgpt_plan import check_account_plan
 from core.chatgpt_auth import get_providers, get_csrf_token, signin_openai
 from core.openai_auth import (
     follow_authorize,
@@ -23,6 +30,7 @@ logger = logging.getLogger(__name__)
 _LOG_DIR = Path(__file__).resolve().parent.parent / "注册日志"
 _RUNNING: set[str] = set()
 _RUNNING_LOCK = threading.Lock()
+_VALID_MODES = {"full", "light", "auto"}
 
 # 查活网络预检失败（403/429/代理/超时等）多为出口 IP 被 CF 标记或代理池抖动，
 # 视为可换新 IP 重试；账号本身问题（废号/邮箱错误等）不重试。
@@ -123,17 +131,93 @@ def _validate_with_retry(session: BrowserSession, email: str, otp_after_ts: floa
     raise last_exc if last_exc else RuntimeError("OTP 验证失败")
 
 
-def check_account_liveness(email: str, proxy: str | None = None, *, clear_log: bool = True) -> dict:
+def _make_file_handler(path: Path) -> logging.FileHandler:
+    """按当前线程创建查活日志 FileHandler，只记录本线程的日志。"""
+    thread_name = threading.current_thread().name
+    fh = logging.FileHandler(str(path), encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    fh.addFilter(lambda record: record.threadName == thread_name)
+    return fh
+
+
+def _probe_liveness_light(email: str, proxy: str | None, checked_at: str) -> dict:
+    """轻量 token 探测核心：取账号库 access_token，打套餐查询接口。
+
+    返回 status：live（200）/ deactivated（401 或 token_expired）/ failed（其他）。
+    不重新登录、不烧 OTP；探测走 check_account_plan（BrowserSession/curl_cffi，
+    http/https/socks5h 自动适配，协议无关）。
     """
-    重新登录账号并刷新最新 accessToken。
+    try:
+        acc = db.get_account_by_email(email)
+    except Exception as exc:
+        return {"ok": False, "status": "failed", "checked_at": checked_at,
+                "error": f"读取账号库失败: {type(exc).__name__}: {str(exc)[:300]}"}
+    if not acc:
+        return {"ok": False, "status": "failed", "checked_at": checked_at,
+                "error": "账号库中未找到该账号，需重新登录"}
+    token = str(acc.get("access_token") or "").strip()
+    if not token:
+        return {"ok": False, "status": "failed", "checked_at": checked_at,
+                "error": "账号库无token，需重新登录"}
+
+    logger.info("[查活-轻量] token 探测：%s", email)
+    try:
+        probe = check_account_plan(token, proxy=proxy, timeout=20, max_attempts=2, retry_delay=1.0)
+    except Exception as exc:
+        return {"ok": False, "status": "failed", "checked_at": checked_at,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+
+    http_status = probe.get("http_status")
+    error = str(probe.get("error") or "")
+    if bool(probe.get("ok")) and http_status == 200:
+        logger.info("[查活-轻量] 正常：%s plan=%s", email, probe.get("current_plan_type"))
+        return {
+            "ok": True,
+            "status": "live",
+            "checked_at": checked_at,
+            "access_token": token,
+            "http_status": http_status,
+            "plan_type": probe.get("current_plan_type"),
+        }
+    if http_status == 401 or probe.get("token_expired"):
+        logger.warning("[查活-轻量] token 失效：%s", email)
+        return {
+            "ok": False,
+            "status": "deactivated",
+            "checked_at": checked_at,
+            "http_status": http_status,
+            "error": error or "AT已过期/失效，需重新登录",
+        }
+    logger.warning("[查活-轻量] 不确定：%s http_status=%s error=%s", email, http_status, error[:200])
+    return {
+        "ok": False,
+        "status": "failed",
+        "checked_at": checked_at,
+        "http_status": http_status,
+        "error": error or f"token 探测失败 http_status={http_status}",
+    }
+
+
+def check_account_liveness_light(email: str, proxy: str | None = None, *, clear_log: bool = True) -> dict:
+    """
+    轻量 token 探测查活：不重新登录、不烧 OTP，协议无关。
+
+    用账号库现有 access_token 打套餐查询接口探测：
+      - http_status==200            → status=live（有效）
+      - http_status==401/token_expired → status=deactivated（失效）
+      - 其他（403 风控/网络异常/无 token）→ status=failed（不确定，可降级完整重登录）
 
     返回：
       {
         ok: bool,
         status: live/deactivated/failed,
         access_token: str?,
-        session: dict?,
         checked_at: ISO,
+        http_status: int?,
         error: str?
       }
     """
@@ -142,28 +226,34 @@ def check_account_liveness(email: str, proxy: str | None = None, *, clear_log: b
         raise ValueError("email 不能为空")
 
     checked_at = _now()
-    key = email.lower()
     path = log_path(email)
     path.parent.mkdir(parents=True, exist_ok=True)
     if clear_log:
         path.write_text("", encoding="utf-8")
 
-    fh: logging.FileHandler | None = None
-    root_logger = logging.getLogger()
-    thread_name = threading.current_thread().name
+    key = email.lower()
     with _RUNNING_LOCK:
         _RUNNING.add(key)
+    fh: logging.FileHandler | None = None
     try:
-        fh = logging.FileHandler(str(path), encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%H:%M:%S",
-        ))
-        fh.addFilter(lambda record: record.threadName == thread_name)
-        root_logger.addHandler(fh)
+        fh = _make_file_handler(path)
+        logging.getLogger().addHandler(fh)
+        logger.info("[查活-轻量] 日志文件：%s", path)
+        return _probe_liveness_light(email, proxy, checked_at)
+    finally:
+        try:
+            logger.info("[查活-轻量] 结束：%s", email)
+            if fh is not None:
+                logging.getLogger().removeHandler(fh)
+                fh.close()
+        finally:
+            with _RUNNING_LOCK:
+                _RUNNING.discard(key)
 
-        logger.info("[查活] 日志文件：%s", path)
+
+def _check_liveness_full(email: str, proxy: str | None, checked_at: str) -> dict:
+    """完整重新登录查活（Providers → OTP → OAuth callback → Session/AT）。"""
+    try:
         logger.info("[查活] 开始重新登录：%s", email)
         logger.info("[查活] 流程：Providers → CSRF → Signin → Authorize → 邮箱 OTP → OAuth callback → Session/AT")
         session, authorize_url = _network_preflight_with_retry(email, proxy)
@@ -220,11 +310,70 @@ def check_account_liveness(email: str, proxy: str | None = None, *, clear_log: b
             return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
         logger.warning("[查活] 失败：%s %s: %s", email, type(exc).__name__, str(exc)[:260])
         return {"ok": False, "status": "failed", "checked_at": checked_at, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+
+
+def check_account_liveness(
+    email: str,
+    proxy: str | None = None,
+    *,
+    clear_log: bool = True,
+    mode: str = "auto",
+) -> dict:
+    """
+    查活入口。
+
+    mode:
+      - light: 只用现有 token 轻量探测，不重新登录、不烧 OTP
+      - full:  完整重新登录（旧行为）
+      - auto（默认）: 先 light 探测；live/deactivated 直接返回，
+        failed（403/风控/网络异常/无 token，不确定）降级完整重登录确认
+
+    返回：
+      {
+        ok: bool,
+        status: live/deactivated/failed,
+        access_token: str?,
+        session: dict?,
+        checked_at: ISO,
+        error: str?
+      }
+    """
+    email = str(email or "").strip()
+    if not email:
+        raise ValueError("email 不能为空")
+    mode = str(mode or "auto").strip().lower()
+    if mode not in _VALID_MODES:
+        raise ValueError(f"mode={mode!r} 无效，可选 full / light / auto")
+
+    checked_at = _now()
+    path = log_path(email)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if clear_log:
+        path.write_text("", encoding="utf-8")
+
+    key = email.lower()
+    with _RUNNING_LOCK:
+        _RUNNING.add(key)
+    fh: logging.FileHandler | None = None
+    try:
+        fh = _make_file_handler(path)
+        logging.getLogger().addHandler(fh)
+        logger.info("[查活] 日志文件：%s", path)
+
+        if mode == "light":
+            return _probe_liveness_light(email, proxy, checked_at)
+
+        if mode == "auto":
+            light = _probe_liveness_light(email, proxy, checked_at)
+            if light.get("status") in {"live", "deactivated"}:
+                return light
+            logger.info("[查活] 轻量探测不确定（%s），降级完整重新登录确认：%s", light.get("error"), email)
+        return _check_liveness_full(email, proxy, checked_at)
     finally:
         try:
             logger.info("[查活] 结束：%s", email)
             if fh is not None:
-                root_logger.removeHandler(fh)
+                logging.getLogger().removeHandler(fh)
                 fh.close()
         finally:
             with _RUNNING_LOCK:

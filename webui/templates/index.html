@@ -2569,7 +2569,7 @@
           </label>
           <button type="button" class="acc-v2-toggle" id="showArchivedAccountsV2" aria-pressed="false" title="默认只显示未归档账号；开启后单独查看归档账号">查看归档</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshAccountsV2" title="重新加载当前筛选条件和当前页账号列表">刷新账号</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveTopV2" onclick="checkSelectedLive()" title="重新登录选中账号;成功且未封号则标记正常,并刷新最新 AT/accessToken">查活</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveTopV2" onclick="checkSelectedLive()" title="查活选中账号（默认轻量 token 探测，不确定才重新登录刷新 AT）">查活</button>
           <button type="button" class="jobs-tb-btn" id="btnVerdictSelectedV2" onclick="checkVerdict(Array.from(ACCOUNT_SELECTED))" disabled title="对选中账号读邮箱邮件判断封号/RT过期">判定</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnReauthRtExpiredV2" onclick="reauthRtExpired()" disabled title="对选中账号中判定为 RT 过期的,自动重上号(补跑 Codex)">重上RT过期号</button>
           <div class="hidden">
@@ -3992,7 +3992,7 @@ function _accountsV2MoreMenu(r) {
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
     `<button type="button" data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button>`,
-    `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
+    `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="查活该账号（默认轻量 token 探测，不确定才重新登录刷新 AT）">查活刷新AT</button>`,
     `<button type="button" data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button>`,
     _planAction(r),
     _extractLinkAction(r),
@@ -4927,9 +4927,9 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const workers = getCodexBulkWorkers();
-  const msg = idsArg ? `确定查活这个账号并刷新最新 AT/accessToken 吗？` : `确定查活选中的 ${ids.length} 个账号吗？
+  const msg = idsArg ? `确定查活这个账号吗？` : `确定查活选中的 ${ids.length} 个账号吗？
 
-会重新登录邮箱 OTP；登录成功且未封号则标记正常，并刷新最新 AT/accessToken。
+默认轻量 token 探测（不烧 OTP）；探测失败/不确定时才自动重新登录邮箱 OTP 确认并刷新最新 AT/accessToken。
 
 并发线程数：${workers}`;
   if (!confirm(msg)) return;

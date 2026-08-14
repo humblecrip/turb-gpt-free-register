@@ -38,7 +38,7 @@ def _append_log(email: str, line: str, *, clear: bool = False) -> None:
         f.write(f"{stamp} [INFO] {line}\n")
 
 
-def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: str) -> dict:
+def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: str, mode: str = "auto") -> dict:
     try:
         with _LOCK:
             _RUNNING.add(int(account_id))
@@ -50,11 +50,11 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
         _append_log(
             email,
             "[查活] 开始后台执行 "
-            f"trigger={trigger} network_route={route.get('network_route')} "
+            f"trigger={trigger} mode={mode} network_route={route.get('network_route')} "
             f"proxy_mode={route.get('proxy_mode')} proxy_used={route.get('proxy_used') or '-'} "
             f"fallback_reason={route.get('proxy_fallback_reason') or '-'}"
         )
-        result = check_account_liveness(email, proxy=selected_proxy, clear_log=False)
+        result = check_account_liveness(email, proxy=selected_proxy, clear_log=False, mode=mode)
         # 早期 providers/csrf 403 通常是该出口被 CF 拦截，不代表账号死亡。
         # auto/proxy 模式下如果用了代理，额外直连兜底一次，便于和套餐查询的 auto 语义保持接近。
         err_text = str(result.get("error") or "")
@@ -66,7 +66,7 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             and str(route.get("network_route") or "") == "proxy"
         ):
             _append_log(email, "[查活] 代理出口收到 403，尝试直连兜底一次")
-            result = check_account_liveness(email, proxy="", clear_log=False)
+            result = check_account_liveness(email, proxy="", clear_log=False, mode=mode)
         db.update_account_liveness(account_id, result)
         if result.get("ok"):
             _append_log(email, "[查活] 完成：账号正常，已刷新最新 AT/accessToken")
@@ -98,18 +98,21 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
         _QUEUE_SLOTS.release()
 
 
-def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "manual", proxy: str | None = None) -> dict:
+def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "manual", proxy: str | None = None, mode: str = "auto") -> dict:
     account_id = int(account_id)
     email = str(email or "").strip()
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
+    mode = str(mode or "auto").strip().lower()
+    if mode not in {"auto", "light", "full"}:
+        return {"accepted": False, "busy": False, "error": f"mode={mode!r} 无效，可选 auto / light / full"}
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "queue_full": True, "error": "查活队列已满，请稍后重试"}
     if not db.claim_account_live_check(acc_id=account_id, trigger=trigger):
         _QUEUE_SLOTS.release()
         return {"accepted": False, "busy": True, "error": "该账号正在查活"}
 
-    _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger}", clear=True)
+    _append_log(email, f"[查活] 已入队 account_id={account_id} trigger={trigger} mode={mode}", clear=True)
     try:
         _EXECUTOR.submit(
             _run_live_check,
@@ -117,6 +120,7 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
             email=email,
             proxy=proxy,
             trigger=str(trigger or "manual"),
+            mode=mode,
         )
     except Exception as exc:
         _QUEUE_SLOTS.release()

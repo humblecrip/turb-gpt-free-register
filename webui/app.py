@@ -547,9 +547,12 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.post("/api/accounts/check-live-bulk")
     def api_accounts_check_live_bulk():
-        """批量查活：加入后台队列；协议 BrowserSession 指纹环境重新登录并刷新最新 AT。"""
+        """批量查活：加入后台队列；auto 模式先轻量 token 探测，不确定再完整重新登录刷新 AT。"""
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
+        mode = str(data.get("mode") or "auto").strip().lower()
+        if mode not in {"auto", "light", "full"}:
+            return jsonify({"ok": False, "error": f"mode={mode!r} 无效，可选 auto / light / full"}), 400
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         if len(ids) > 500:
@@ -591,6 +594,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 account_id=acc_id,
                 email=email,
                 trigger="manual",
+                mode=mode,
                 # 查活按“查套餐”同一套网络选路：
                 # PLAN_CHECK_PROXY_MODE / PLAN_CHECK_PROXY / PROXY_POOL。
                 # 不复用账号注册时的 proxy_used，避免旧注册出口被 CF 403 后一直失败。
