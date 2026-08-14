@@ -521,6 +521,33 @@ def download_cpa_codex_auth_text(*, cpa_name: str | None = None, email: str = ""
     return json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", name, (meta or {"name": name})
 
 
+def _build_cpa_content_from_account(email: str) -> tuple[str, str] | tuple[None, None]:
+    """账号库有有效 access_token 时，构造 CPA 凭证文本与文件名。
+
+    返回 (content, name)；账号库无 token 或查询失败时返回 (None, None)，
+    调用方回退 download_cpa_codex_auth_text。
+    """
+    try:
+        from core import db
+        account = db.get_account_by_email(email)
+    except Exception as exc:
+        logger.warning("[Codex][CPA] 查询账号库失败，回退下载：%s", exc)
+        return None, None
+    access_token = str((account or {}).get("access_token") or "").strip()
+    if not access_token:
+        return None, None
+    credential = build_credential_from_account(email, access_token)
+    plan_type = str((account or {}).get("plan_type") or (account or {}).get("current_plan_type") or "").strip()
+    name = _credential_file_name(email, plan_type)
+    content = json.dumps(credential, ensure_ascii=False, indent=2) + "\n"
+    try:
+        path = save_codex_credential(credential, email, plan_type)
+        logger.info("[Codex][CPA] 已从账号库 token 构造并落盘本地凭证：%s", path)
+    except Exception as exc:
+        logger.warning("[Codex][CPA] 本地凭证落盘失败（不阻塞上传）：%s", exc)
+    return content, name
+
+
 def upload_cpa_auth_file(*, email: str = "", name: str = "", content: str = "") -> dict:
     """把 auth 文件内容 multipart 上传到 CPA auth-files，触发 CPA 完整重解析。
 
@@ -530,9 +557,9 @@ def upload_cpa_auth_file(*, email: str = "", name: str = "", content: str = "") 
     本函数用于补跑成功后主动上传，避免手动重传/重启。
 
     参数：
-        email    只给 email 时，先 download_cpa_codex_auth_text 下载该邮箱 CPA 侧
-                 最新 auth 文件（最稳妥：落盘的 callback 回执无 access_token，
-                 直接重新上传下载到的完整 auth 文件即可触发重解析）
+        email    只给 email 时，优先从本地账号库取有效 access_token 构造凭证上传
+                 （避免把 CPA 侧失效凭证下载回来再上传的死循环）；账号库无 token
+                 时才回退 download_cpa_codex_auth_text 下载 CPA 侧现有文件。
         name     CPA 侧文件名（如 codex-user@example.com-free.json）
         content  auth 文件 JSON 文本
 
@@ -540,7 +567,9 @@ def upload_cpa_auth_file(*, email: str = "", name: str = "", content: str = "") 
         响应 dict（{"status": "ok"} 视为成功）；非 2xx 抛 RuntimeError。
     """
     if not content and email:
-        content, name, _ = download_cpa_codex_auth_text(email=email)
+        content, name = _build_cpa_content_from_account(email)
+        if not content:
+            content, name, _ = download_cpa_codex_auth_text(email=email)
     name = str(name or "").strip()
     content = str(content or "").strip()
     if not name or not content:
@@ -1298,6 +1327,47 @@ def build_codex_storage(token_resp: dict, id_claims: dict) -> dict:
 def _timedelta_seconds(seconds: int):
     from datetime import timedelta
     return timedelta(seconds=int(seconds))
+
+
+def build_credential_from_account(email: str, access_token: str) -> dict:
+    """从账号库 access_token 构造 CPA 兼容的 Codex 凭证结构。
+
+    CPA 有效凭证字段（对照已下载的 codex-{email}-free.json）：
+        type / email / expired / disabled / id_token / account_id /
+        access_token / last_refresh / refresh_token
+    这里 id_token 与 access_token 都填 access_token（账号库没有独立 id_token），
+    refresh_token 账号库未存，置空字符串。account_id 从 JWT payload 的
+    https://api.openai.com/auth.chatgpt_account_id 解出，回退 sub；
+    expired 用 JWT exp 转 +08:00 格式。
+    """
+    claims = {}
+    try:
+        seg = (access_token or "").split(".")
+        if len(seg) >= 2:
+            claims = _decode_jwt_segment(seg[1])
+    except Exception:
+        claims = {}
+    auth_claim = claims.get("https://api.openai.com/auth", {}) or {}
+    account_id = str(auth_claim.get("chatgpt_account_id") or claims.get("sub") or "").strip()
+    expired = ""
+    try:
+        exp_ts = int(claims.get("exp") or 0)
+        if exp_ts:
+            expired = datetime.fromtimestamp(exp_ts, tz=timezone(_timedelta_seconds(8 * 3600))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    except Exception:
+        expired = ""
+    last_refresh = datetime.now(timezone(_timedelta_seconds(8 * 3600))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    return {
+        "type": "codex",
+        "email": email,
+        "expired": expired,
+        "disabled": False,
+        "id_token": access_token,
+        "account_id": account_id,
+        "access_token": access_token,
+        "last_refresh": last_refresh,
+        "refresh_token": "",
+    }
 
 
 def _credential_file_name(email: str, plan_type: str) -> str:
