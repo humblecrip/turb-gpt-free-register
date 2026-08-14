@@ -235,7 +235,12 @@ def run_worker(
                 _cpa_mode = False
             if _cpa_mode:
                 try:
-                    from core.codex_oauth import upload_cpa_auth_file
+                    from core.codex_oauth import _backfill_cpa_credential_to_local, upload_cpa_auth_file
+                    _backfill_cpa_credential_to_local(email)
+                    logger.info("[Codex 补跑] CPA 凭证已回填本地（含 refresh_token）: %s", email)
+                except Exception as exc:
+                    logger.warning("[Codex 补跑] CPA 凭证回填本地失败（不阻塞补跑成功）: %s: %s", email, exc)
+                try:
                     upload_cpa_auth_file(email=email)
                     logger.info("[Codex 补跑] CPA auth 文件已重新上传（触发重载）: %s", email)
                 except Exception as exc:

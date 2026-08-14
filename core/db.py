@@ -519,6 +519,7 @@ def _decorate_account(row: dict) -> dict:
     out = dict(row)
     out["note"] = out.get("note") or ""
     out["note_updated_at"] = out.get("note_updated_at") or ""
+    out["refresh_token"] = out.get("refresh_token") or ""
     plan_status = out.get("plan_check_status")
     if plan_status in {"queued", "running"}:
         try:
@@ -622,6 +623,7 @@ def insert_account(
     extra: dict | None = None,
     codex_status: str | None = None,   # success / failed / skipped / missing
     codex_error: str | None = None,    # 失败原因（仅 codex_status=failed 时有意义）
+    refresh_token: str | None = None,  # Codex OAuth refresh_token（用于 CPA 凭证自动刷新）
 ) -> int:
     """插入或更新注册成功账号，返回本地文件中的 id。"""
     with _LOCK:
@@ -656,13 +658,17 @@ def insert_account(
             "extra_json": extra_json if extra_json is not None else row.get("extra_json"),
             "codex_status": codex_status if codex_status is not None else row.get("codex_status"),
             "codex_error": codex_error if codex_error is not None else row.get("codex_error"),
+            "refresh_token": refresh_token if refresh_token is not None else row.get("refresh_token"),
             "updated_at": _now(),
         })
 
         if outlook_row:
             row["password"] = outlook_row.get("password")
             row["client_id"] = outlook_row.get("client_id")
-            row["refresh_token"] = outlook_row.get("refresh_token")
+            # 账号库 refresh_token 优先存 Codex OAuth refresh_token（CPA 凭证刷新用）；
+            # 仅在未显式传入时，才把 Outlook 邮箱池的收件 refresh_token 拷贝到账号行（兼容旧行为）。
+            if not row.get("refresh_token"):
+                row["refresh_token"] = outlook_row.get("refresh_token")
             row["original_email_line"] = _outlook_line(outlook_row)
             outlook_row["status"] = "used"
             outlook_row["used_at"] = outlook_row.get("used_at") or _now()
@@ -690,6 +696,36 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
             return False
         row["codex_status"] = codex_status
         row["codex_error"] = codex_error
+        row["updated_at"] = _now()
+        _save_accounts(accounts)
+        return True
+
+
+def update_account_tokens(
+    email: str,
+    *,
+    access_token: str | None = None,
+    refresh_token: str | None = None,
+    plan_type: str | None = None,
+) -> bool:
+    """
+    更新账号库的 Codex token 字段（access_token / refresh_token / plan_type）。
+
+    refresh_token 用于 CPA 凭证过期自动刷新；补跑成功后把新 token 写回账号库，
+    避免上传 CPA 的凭证缺 refresh_token。参数为 None 时保持原值不变。
+    返回是否找到该账号。
+    """
+    with _LOCK:
+        accounts = _load_accounts()
+        row = _find_by_email(accounts, email)
+        if row is None:
+            return False
+        if access_token is not None:
+            row["access_token"] = str(access_token or "")
+        if refresh_token is not None:
+            row["refresh_token"] = str(refresh_token or "")
+        if plan_type is not None:
+            row["plan_type"] = str(plan_type or "")
         row["updated_at"] = _now()
         _save_accounts(accounts)
         return True

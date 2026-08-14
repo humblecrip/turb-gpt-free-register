@@ -521,23 +521,63 @@ def download_cpa_codex_auth_text(*, cpa_name: str | None = None, email: str = ""
     return json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", name, (meta or {"name": name})
 
 
-def _build_cpa_content_from_account(email: str) -> tuple[str, str] | tuple[None, None]:
-    """账号库有有效 access_token 时，构造 CPA 凭证文本与文件名。
+def _load_local_credential(email: str, plan_type: str) -> tuple[str, str] | None:
+    """读取本地已落盘的 codex 凭证文件。
 
-    返回 (content, name)；账号库无 token 或查询失败时返回 (None, None)，
-    调用方回退 download_cpa_codex_auth_text。
+    优先按 plan_type 文件名（codex-{email}-{plan}.json），并兼容无 plan 的
+    codex-{email}.json。仅当文件含 access_token 且含 refresh_token 时采用，
+    避免把缺 refresh_token 的旧凭证再上传到 CPA。返回 (content, name) 或 None。
+    """
+    candidates = [_credential_file_name(email, plan_type)]
+    base = _credential_file_name(email, "")
+    if base not in candidates:
+        candidates.append(base)
+    out_dir = _PROJECT_ROOT / _cfg.CODEX_OUTPUT_DIRNAME
+    for fname in candidates:
+        path = out_dir / fname
+        try:
+            if not path.exists():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("[Codex][CPA] 本地凭证读取失败，跳过：%s：%s", path, exc)
+            continue
+        if not isinstance(data, dict) or not str(data.get("access_token") or "").strip():
+            logger.warning("[Codex][CPA] 本地凭证缺 access_token，跳过：%s", path)
+            continue
+        if not str(data.get("refresh_token") or "").strip():
+            logger.warning("[Codex][CPA] 本地凭证缺 refresh_token，回退账号库：%s", path)
+            continue
+        logger.info("[Codex][CPA] 命中本地凭证文件：%s", path)
+        return json.dumps(data, ensure_ascii=False, indent=2) + "\n", path.name
+    return None
+
+
+def _build_cpa_content_from_account(email: str) -> tuple[str, str] | tuple[None, None]:
+    """构造 CPA 凭证文本与文件名。
+
+    优先级：
+    1) 本地 codex_accounts/codex-{email}-{plan}.json（含完整 access_token + refresh_token）直接使用；
+    2) 回退账号库构造（带账号库已补存的 refresh_token）；
+    3) 账号库无 token 返回 (None, None)，调用方回退 download_cpa_codex_auth_text。
     """
     try:
         from core import db
         account = db.get_account_by_email(email)
     except Exception as exc:
         logger.warning("[Codex][CPA] 查询账号库失败，回退下载：%s", exc)
-        return None, None
+        account = None
+    plan_type = str((account or {}).get("plan_type") or (account or {}).get("current_plan_type") or "").strip()
+    local = _load_local_credential(email, plan_type)
+    if local is not None:
+        content, name = local
+        logger.info("[Codex][CPA] 上传优先使用本地凭证（含 refresh_token）：%s", name)
+        return content, name
     access_token = str((account or {}).get("access_token") or "").strip()
     if not access_token:
         return None, None
-    credential = build_credential_from_account(email, access_token)
-    plan_type = str((account or {}).get("plan_type") or (account or {}).get("current_plan_type") or "").strip()
+    refresh_token = str((account or {}).get("refresh_token") or "").strip()
+    credential = build_credential_from_account(email, access_token, refresh_token)
     name = _credential_file_name(email, plan_type)
     content = json.dumps(credential, ensure_ascii=False, indent=2) + "\n"
     try:
@@ -783,6 +823,75 @@ def _verify_cpa_auth_landed(email, *, max_attempts=None, delay=None) -> bool:
         if attempt < max_attempts:
             time.sleep(delay)
     return False
+
+
+def _plan_type_from_cpa_name(cpa_name: str) -> str:
+    """从 CPA 文件名 codex-{email}-{plan}.json 提取 plan 后缀；解析不了返回空串。"""
+    name = str(cpa_name or "").strip()
+    if name.startswith("codex-") and name.endswith(".json"):
+        middle = name[len("codex-"):-len(".json")]
+        if "@" in middle:
+            _, _, plan = middle.rpartition("-")
+            if plan:
+                return plan
+    return ""
+
+
+def _backfill_cpa_credential_to_local(email: str) -> Path | None:
+    """CPA 授权成功后，把 CPA 侧完整凭证回填本地。
+
+    1) 从 CPA 下载完整凭证（含 access_token + refresh_token）；
+    2) 落盘到 codex_accounts/codex-{email}-{plan}.json（plan 取账号库，未知则沿用 CPA 文件名）；
+    3) 把 access_token / refresh_token / plan_type 写回账号库。
+
+    这样后续 upload_cpa_auth_file 优先命中本地凭证，上传的凭证含 refresh_token，
+    CPA 才能在 access_token 过期后自动刷新（修复 401）。失败抛 RuntimeError，
+    由调用方决定是否阻塞。
+    """
+    text, cpa_name, _ = download_cpa_codex_auth_text(email=email)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"[Codex][CPA] 回填失败：CPA 下载内容不是 JSON 对象: {cpa_name}")
+    access_token = str(data.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError(f"[Codex][CPA] 回填失败：CPA 凭证缺 access_token: {cpa_name}")
+    refresh_token = str(data.get("refresh_token") or "").strip()
+    if not refresh_token:
+        # 回填目的就是恢复 refresh_token；缺 rt 的凭证回填无意义，且会把账号库
+        # 已有 refresh_token 覆盖成空串，导致上传的凭证依旧缺 rt（401 复现）。
+        # 在写任何内容前失败，保留账号库原值，等重新授权补跑拿到新 token。
+        raise RuntimeError(
+            f"[Codex][CPA] 回填失败：CPA 凭证缺 refresh_token（无法修复过期 401），"
+            f"保留账号库原值，等待重新授权补跑: {cpa_name}"
+        )
+    plan_type = ""
+    try:
+        from core import db
+        account = db.get_account_by_email(email)
+        plan_type = str((account or {}).get("plan_type") or (account or {}).get("current_plan_type") or "").strip()
+    except Exception as exc:
+        logger.warning("[Codex][CPA] 回填时查询账号库失败（不阻塞落盘）：%s", exc)
+    if plan_type:
+        path = save_codex_credential(data, email, plan_type)
+    else:
+        fname = cpa_name or _credential_file_name(email, _plan_type_from_cpa_name(cpa_name))
+        out_dir = _PROJECT_ROOT / _cfg.CODEX_OUTPUT_DIRNAME
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / fname
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    logger.info("[Codex][CPA] 已从 CPA 回填本地凭证（含 refresh_token）：%s", path)
+    try:
+        from core import db
+        db.update_account_tokens(
+            email,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            plan_type=plan_type or None,
+        )
+        logger.info("[Codex][CPA] access_token / refresh_token 已写回账号库：%s", email)
+    except Exception as exc:
+        logger.warning("[Codex][CPA] refresh_token 写回账号库失败（不阻塞成功）：%s", exc)
+    return path
 
 
 # ============================================================
@@ -1329,14 +1438,15 @@ def _timedelta_seconds(seconds: int):
     return timedelta(seconds=int(seconds))
 
 
-def build_credential_from_account(email: str, access_token: str) -> dict:
+def build_credential_from_account(email: str, access_token: str, refresh_token: str = "") -> dict:
     """从账号库 access_token 构造 CPA 兼容的 Codex 凭证结构。
 
     CPA 有效凭证字段（对照已下载的 codex-{email}-free.json）：
         type / email / expired / disabled / id_token / account_id /
         access_token / last_refresh / refresh_token
     这里 id_token 与 access_token 都填 access_token（账号库没有独立 id_token），
-    refresh_token 账号库未存，置空字符串。account_id 从 JWT payload 的
+    refresh_token 取账号库已补存的 refresh_token（非空时），避免上传 CPA 的
+    凭证缺 refresh_token 导致过期后无法刷新（401）。account_id 从 JWT payload 的
     https://api.openai.com/auth.chatgpt_account_id 解出，回退 sub；
     expired 用 JWT exp 转 +08:00 格式。
     """
@@ -1366,7 +1476,7 @@ def build_credential_from_account(email: str, access_token: str) -> dict:
         "account_id": account_id,
         "access_token": access_token,
         "last_refresh": last_refresh,
-        "refresh_token": "",
+        "refresh_token": str(refresh_token or ""),
     }
 
 
@@ -1691,6 +1801,10 @@ def run_codex_oauth(
                     message=f"CPA callback 提交成功但未落盘可用 auth 文件：{msg}",
                 )
             logger.info(f"[Codex][CPA] 成功：{email}，{msg}，CPA 已落盘，本地记录={path or 'disabled'}")
+            try:
+                _backfill_cpa_credential_to_local(email)
+            except Exception as exc:
+                logger.warning("[Codex][CPA] CPA 凭证回填本地失败（不阻塞成功）：%s", exc)
             return _codex_result(
                 status="success",
                 ok=True,
@@ -1735,6 +1849,18 @@ def run_codex_oauth(
         effective_email = id_claims.get("email") or email
         storage = build_codex_storage(token_resp, id_claims)
         path = save_codex_credential(storage, effective_email, id_claims.get("plan_type", ""))
+
+        try:
+            from core import db
+            db.update_account_tokens(
+                effective_email,
+                access_token=storage.get("access_token", ""),
+                refresh_token=storage.get("refresh_token", ""),
+                plan_type=id_claims.get("plan_type") or None,
+            )
+            logger.info("[Codex] access_token / refresh_token 已写回账号库：%s", effective_email)
+        except Exception as exc:
+            logger.warning("[Codex] token 写回账号库失败（不阻塞成功）：%s", exc)
 
         logger.info(
             f"[Codex] 成功：{effective_email}，plan={id_claims.get('plan_type') or 'unknown'}, "
