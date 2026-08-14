@@ -104,6 +104,7 @@ from config.proxy import (
     PLAN_CHECK_JITTER,
     pick_proxy,
     PROXY,
+    normalize_proxy_scheme,
 )
 
 # ---------- 注册默认信息 ----------
@@ -211,7 +212,7 @@ def _refresh_top_level_constants() -> None:
     # 简单粗暴：枚举一遍重要常量，覆盖到 _self
     for src in (browser, openai_protocol, _proxy, register, email, twofa, roxybrowser, cloakbrowser, browser_use, skyvern, codex, extract_link, sub2api, humanize, flow_trigger):
         for k in dir(src):
-            if k.isupper() or k in ("pick_proxy", "pick_browser_profile", "build_browser_environment", "validate_browser_profile"):
+            if k.isupper() or k in ("pick_proxy", "normalize_proxy_scheme", "pick_browser_profile", "build_browser_environment", "validate_browser_profile"):
                 setattr(_self, k, getattr(src, k))
 
 
@@ -240,7 +241,7 @@ __all__ = [
     "PROXY_POOL", "PLAN_CHECK_PROXY_MODE", "PLAN_CHECK_PROXY",
     "PLAN_CHECK_TIMEOUT", "PLAN_CHECK_MAX_ATTEMPTS", "PLAN_CHECK_RETRY_DELAY",
     "PLAN_CHECK_REGISTRATION_RECHECK_DELAY", "PLAN_CHECK_WORKERS", "PLAN_CHECK_QUEUE_LIMIT",
-    "PLAN_CHECK_MIN_INTERVAL", "PLAN_CHECK_JITTER", "pick_proxy", "PROXY",
+    "PLAN_CHECK_MIN_INTERVAL", "PLAN_CHECK_JITTER", "pick_proxy", "PROXY", "normalize_proxy_scheme",
     # register
     "REGISTER_EMAIL", "REGISTER_PASSWORD", "REGISTER_NAME",
     # email

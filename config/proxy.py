@@ -15,8 +15,10 @@ import random
 
 # 本地代理入口；实际出口地区以代理/分流规则为准。
 # 推荐使用 socks5h://（DNS 在代理端解析），避免本地 DNS 与出口 IP 地区错配。
+# 注意：curl_cffi 走 socks5://（无 h）会报 curl (35) BoringSSL SSL_connect 握手失败，
+# 因此实际配置统一用 socks5h://；normalize_proxy_scheme 兜底把 socks5:// 转成 socks5h://。
 PROXY_POOL = [
-    "socks5://127.0.0.1:7890",
+    "socks5h://127.0.0.1:7890",
 ]
 
 # 套餐/Plus 试用资格查询与 Codex Agent Token 生成共用这组独立网络策略，
@@ -47,9 +49,26 @@ PLAN_CHECK_MIN_INTERVAL = 0.4
 PLAN_CHECK_JITTER = 0.3
 
 
+def normalize_proxy_scheme(proxy: str | None) -> str | None:
+    """把 socks5:// 规范化为 socks5h://（DNS 在代理端解析），其余原样返回。
+
+    - None / "" 原样返回（None=从代理池随机抽，""=直连）
+    - socks5://... → socks5h://...（curl_cffi 走无 h 的 socks5 会 SSL 握手失败）
+    - http://、https://、socks5h:// 等保持不变
+    """
+    if not proxy:
+        return proxy
+    text = str(proxy)
+    if text.lower().startswith("socks5://"):
+        return "socks5h://" + text[len("socks5://"):]
+    return proxy
+
+
 def pick_proxy() -> str:
     """从代理池中随机抽取一个代理 URL；池为空时返回空串（即不使用代理）。"""
-    return random.choice(PROXY_POOL) if PROXY_POOL else ""
+    if not PROXY_POOL:
+        return ""
+    return normalize_proxy_scheme(random.choice(PROXY_POOL))
 
 
 # 兼容入口：默认每次进程启动随机选一个，作为本次注册全程的固定代理
