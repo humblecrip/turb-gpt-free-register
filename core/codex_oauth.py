@@ -605,6 +605,9 @@ def upload_cpa_auth_file(*, email: str = "", name: str = "", content: str = "") 
 
     返回：
         响应 dict（{"status": "ok"} 视为成功）；非 2xx 抛 RuntimeError。
+
+    上传成功后自动清理 CPA 侧同邮箱的旧假凭证（见
+    _cleanup_duplicate_cpa_credentials）；清理失败只告警，不阻塞上传成功。
     """
     if not content and email:
         content, name = _build_cpa_content_from_account(email)
@@ -651,6 +654,11 @@ def upload_cpa_auth_file(*, email: str = "", name: str = "", content: str = "") 
             )
         result = payload if isinstance(payload, dict) else {}
         logger.info("[Codex][CPA] auth 文件已上传（触发重载）：name=%s", name)
+        try:
+            cleanup_email = str(email or "").strip() or _email_from_cpa_name(name)
+            _cleanup_duplicate_cpa_credentials(cleanup_email, name)
+        except Exception as exc:
+            logger.warning("[Codex][CPA] 上传后清理同邮箱旧凭证失败（不阻塞上传成功）：%s", exc)
         return result
     finally:
         try:
@@ -661,6 +669,102 @@ def upload_cpa_auth_file(*, email: str = "", name: str = "", content: str = "") 
             session.close()
         except Exception:
             pass
+
+
+def _email_from_cpa_name(name: str) -> str:
+    """从 CPA 文件名 codex-{email}-{plan}.json 提取邮箱；解析不了返回空串。
+
+    只用于上传后清理的兜底（调用方通常直接传 email）。规范凭证名
+    codex-{email}-{plan}.json 可解析；带 hash 前缀的旧假凭证解析不可靠，
+    依赖调用方显式传 email。
+    """
+    n = str(name or "").strip()
+    if not n.startswith("codex-") or not n.endswith(".json"):
+        return ""
+    middle = n[len("codex-"):-len(".json")]
+    if "@" not in middle:
+        return ""
+    head, sep, tail = middle.rpartition("-")
+    if sep and "@" in head and "@" not in tail:
+        return head
+    return middle
+
+
+def _cleanup_duplicate_cpa_credentials(email: str, keep_name: str) -> int:
+    """补跑上传成功后，删除 CPA 侧同邮箱的旧假凭证。
+
+    背景：oauth-callback 落盘的文件带 hash 前缀（codex-{hash}-{email}-free.json）、
+    status 为空且未注册 runtime；与规范凭证 codex-{email}-{plan}.json（active）并存时，
+    CPA 路由可能命中假凭证报 auth token not found。上传成功后调用本函数清理。
+
+    只删「同邮箱 + 非本次上传名 + status 非 active」的凭证；同邮箱只有本次凭证时
+    什么都不删。异常不抛出（清理失败不阻塞上传成功）。返回删除数量。
+    """
+    email_l = str(email or "").strip().lower()
+    keep_name = str(keep_name or "").strip()
+    keep_name_l = keep_name.lower()
+    if not email_l or not keep_name_l or "@" not in email_l:
+        return 0
+    try:
+        files = list_cpa_codex_auth_files()
+    except Exception as exc:
+        logger.warning("[Codex][CPA] 清理同邮箱旧凭证：拉取 auth-files 列表失败，跳过：%s", exc)
+        return 0
+    from core.cpa_reauth import delete_cpa_auth_file
+    deleted = 0
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        name_l = name.lower()
+        if not name_l or name_l == keep_name_l:
+            continue
+        item_email = str(item.get("email") or "").strip().lower()
+        if not item_email:
+            # CPA 列表未返回 email 字段（hash 前缀假凭证常见）时，用文件名兜底
+            # 匹配；边界感知防止 user@x 误匹配 anotheruser@x 这类更长邮箱。
+            if not _cpa_name_contains_email(name_l, email_l):
+                continue
+        elif item_email != email_l:
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status == "active":
+            continue
+        try:
+            delete_cpa_auth_file(name)
+            deleted += 1
+            logger.info(
+                "[Codex][CPA] 已清理同邮箱旧假凭证：email=%s name=%s status=%r",
+                email_l, name, status,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Codex][CPA] 清理同邮箱旧假凭证失败（不阻塞）：email=%s name=%s error=%s",
+                email_l, name, exc,
+            )
+    return deleted
+
+
+def _cpa_name_contains_email(name_l: str, email_l: str) -> bool:
+    """CPA 文件名中是否包含目标邮箱（边界感知，防止子串误匹配）。
+
+    仅用于 CPA 列表未返回 email 字段时的文件名兜底匹配。带 hash 前缀的假凭证名
+    codex-{hash}-{email}-free.json 中 email 前是 '-'（前缀分隔符），应匹配；
+    若 email 前是邮箱 local part 允许的字符（字母数字或 . _ +），说明目标邮箱
+    只是更长 local part 的子串（如 anotheruser@x 含 user@x），不是同邮箱。
+    """
+    idx = name_l.find(email_l)
+    if idx < 0:
+        return False
+    before = name_l[idx - 1] if idx > 0 else "-"
+    if before.isalnum() or before in "._+":
+        return False
+    after_idx = idx + len(email_l)
+    after = name_l[after_idx] if after_idx < len(name_l) else ""
+    if after and (after.isalnum() or after == "@"):
+        return False
+    return True
+
 
 def _first_non_empty(*values) -> str:
     for value in values:
