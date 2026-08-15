@@ -678,6 +678,13 @@ _DEFAULT_COUNTRY_QUEUE = ["54", "76", "73", "33"]
 _SMS_STATS_FILE = Path(__file__).resolve().parent.parent / "data" / "sms_country_stats.json"
 _SMS_STATS_LOCK = threading.Lock()
 
+# 已用号码黑名单文件：{country: [{"phone": "纯数字", "ts": 时间戳}, ...]}
+_USED_PHONES_FILE = Path(__file__).resolve().parent.parent / "data" / "used_phones.json"
+_USED_PHONES_LOCK = threading.Lock()
+# 黑名单清理：只保留最近 30 天，每国家最多 500 条（保存时自动清理）
+_USED_PHONES_MAX_AGE = 30 * 24 * 3600
+_USED_PHONES_MAX_PER_COUNTRY = 500
+
 # iCloud 工作流等调用方选中的国家，前置到队列头（优先级最高）；批次结束后清空
 _SMS_COUNTRY_PREFER: str = ""
 
@@ -922,6 +929,83 @@ def local_country_success_rates() -> dict[str, float]:
         if total > 0:
             rates[str(country)] = success / total
     return rates
+
+
+# ============================================================
+# 已用号码黑名单（already used）
+# ============================================================
+
+def _load_used_phones() -> dict:
+    try:
+        if _USED_PHONES_FILE.exists():
+            data = json.loads(_USED_PHONES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        logger.warning(f"[SMS] 读取已用号码黑名单失败（忽略）：{exc}")
+    return {}
+
+
+def _save_used_phones(used: dict) -> None:
+    try:
+        _USED_PHONES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _USED_PHONES_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(used, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_USED_PHONES_FILE)
+    except Exception as exc:
+        logger.warning(f"[SMS] 保存已用号码黑名单失败（不影响主流程）：{exc}")
+
+
+def _clean_used_phones(used: dict) -> dict:
+    """清理黑名单：只保留最近 30 天，每国家最多 500 条（保留最新）。"""
+    now = time.time()
+    cutoff = now - _USED_PHONES_MAX_AGE
+    cleaned: dict = {}
+    for country, entries in (used or {}).items():
+        if not isinstance(entries, list):
+            continue
+        keep = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            phone = str(entry.get("phone") or "").strip()
+            ts = entry.get("ts") or 0
+            if not phone or not isinstance(ts, (int, float)) or ts < cutoff:
+                continue
+            keep.append({"phone": phone, "ts": ts})
+        keep.sort(key=lambda e: e["ts"], reverse=True)
+        if keep:
+            cleaned[str(country)] = keep[:_USED_PHONES_MAX_PER_COUNTRY]
+    return cleaned
+
+
+def is_phone_blacklisted(country: str, phone: str) -> bool:
+    """取号后判断号码是否已在已用黑名单（精确匹配规范化纯数字号码）。"""
+    country = str(country or "").strip()
+    digits = _normalize_phone_digits(phone)
+    if not country or not digits:
+        return False
+    with _USED_PHONES_LOCK:
+        entries = _load_used_phones().get(country) or []
+    return any(
+        str(e.get("phone") or "") == digits
+        for e in entries if isinstance(e, dict)
+    )
+
+
+def mark_phone_used(country: str, phone: str) -> None:
+    """发现 already used 的号码写入黑名单（规范化 + 国家码 + 时间），保存时自动清理。"""
+    country = str(country or "").strip()
+    digits = _normalize_phone_digits(phone)
+    if not country or not digits:
+        return
+    with _USED_PHONES_LOCK:
+        used = _clean_used_phones(_load_used_phones())
+        entries = [e for e in used.get(country, []) if str(e.get("phone") or "") != digits]
+        entries.append({"phone": digits, "ts": time.time()})
+        entries.sort(key=lambda e: e["ts"], reverse=True)
+        used[country] = entries[:_USED_PHONES_MAX_PER_COUNTRY]
+        _save_used_phones(used)
 
 
 def _top_countries_from_api() -> list[str]:

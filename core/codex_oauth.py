@@ -1083,6 +1083,10 @@ def _phone_failure_reason(text: str, status_code: int | None = None) -> str:
     low = str(text or '').lower()
     if 'whatsapp' in low or 'whats app' in low:
         return 'whatsapp_channel'
+    if any(k in low for k in ('already used', 'already been used', 'used too many', 'maximum', '上限', '已被使用')):
+        # 号码已被使用必须优先于 invalid/delivery 判定：组合文案
+        # （如“已被使用，无法向该号码发送验证码”）不能把已用号误判成 delivery_refused
+        return 'phone_used_or_max'
     if any(k in low for k in (
         'phone number is not valid', 'invalid phone number', 'invalid phone', 'not a valid phone',
         '号码无效', '手机号无效', '电话号码无效', 'invalid_number', 'invalid_phone',
@@ -1096,8 +1100,6 @@ def _phone_failure_reason(text: str, status_code: int | None = None) -> str:
         return 'delivery_refused'
     if any(k in low for k in ('too many', 'rate limit', 'throttle', 'limited', '频繁', '限流')):
         return 'send_limited'
-    if any(k in low for k in ('already used', 'used too many', 'maximum', '上限', '已被使用')):
-        return 'phone_used_or_max'
     if status_code and status_code >= 500:
         return 'server_error'
     if status_code and status_code >= 400:
@@ -1244,6 +1246,15 @@ def _do_phone_verification(session: BrowserSession) -> None:
             logger.warning(f"[Codex] 接码尝试 {attempt} 取号失败（平台异常）：{exc}")
             _sleep_before_phone_retry(attempt, max_retries)
             raise
+
+        # 取号后立刻查已用黑名单：命中直接释放换号（不提交 OpenAI），同国家重试。
+        if sms_provider.is_phone_blacklisted(country, phone):
+            logger.warning(
+                f"[Codex] 号码 +{phone} 命中已用黑名单（country={country}），cancel 换号，不提交 OpenAI"
+            )
+            sms_provider.cancel(activation_id, http)
+            _sleep_before_phone_retry(attempt, max_retries)
+            raise sms_provider.SmsProviderError(f"号码 +{phone} 命中已用黑名单，同国家换号")
         logger.info(
             f"[Codex] 手机验证尝试 {attempt}/{max_retries}，"
             f"provider={provider}, country={country}, activation_id={activation_id}, 号码=+{phone}"
@@ -1267,8 +1278,14 @@ def _do_phone_verification(session: BrowserSession) -> None:
                     f"[Codex] add-phone/send 未成功 reason={send_reason or 'unknown'}, "
                     f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
                 )
-                if send_reason in ("whatsapp_channel", "phone_used_or_max", "invalid_phone"):
-                    # 果断换国家：该国号码走 WhatsApp 或已被使用/格式问题，切到队列下一个国家
+                if send_reason == "phone_used_or_max":
+                    # 号码已被使用 → 写入已用黑名单，释放当前号，同国家换号（计入 attempts）
+                    sms_provider.mark_phone_used(country, phone)
+                    raise sms_provider.SmsProviderError(
+                        f"add-phone/send phone_used_or_max，号码 +{phone} 已用，同国家换号"
+                    )
+                if send_reason in ("whatsapp_channel", "invalid_phone"):
+                    # 果断换国家：该国号码走 WhatsApp 或格式问题，切到队列下一个国家
                     raise sms_provider.SmsNoNumbersError(
                         f"add-phone/send {send_reason}，国家 {country} 号码不可用"
                     )
@@ -1308,6 +1325,8 @@ def _do_phone_verification(session: BrowserSession) -> None:
                     f"[Codex] phone-otp/validate 失败 reason={val_reason}, status={val_resp.status_code}: "
                     f"{val_text[:240]}，换号重试"
                 )
+                if val_reason == "phone_used_or_max":
+                    sms_provider.mark_phone_used(country, phone)
                 raise sms_provider.SmsProviderError(
                     f"phone-otp/validate 失败 reason={val_reason}"
                 )

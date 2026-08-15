@@ -1102,6 +1102,10 @@ def _classify_phone_page_failure(state: dict) -> str:
         return 'invalid_auth_step'
     if 'whatsapp' in text or 'whats app' in text:
         return 'whatsapp_channel'
+    if any(k in text for k in ('already used', 'already been used', 'used too many', 'maximum', '上限', '已被使用')):
+        # 号码已被使用必须优先于 invalid/delivery 判定：组合文案
+        # （如“已被使用，无法向该号码发送验证码”）不能把已用号误判成 delivery_refused
+        return 'phone_used_or_max'
     if any(k in text for k in ('invalid phone', 'not a valid phone', 'phone number is not valid', '号码无效', '手机号无效')):
         return 'invalid_phone'
     if any(k in text for k in (
@@ -1156,6 +1160,16 @@ def _do_phone_verification_if_present(driver) -> None:
                 logger.warning("[Codex][Browser] 接码尝试 %s 取号失败（平台异常）：%s", attempt, exc)
                 _sleep_before_phone_retry(attempt, max_retries)
                 raise
+            # 取号后立刻查已用黑名单：命中直接释放换号（不提交 OpenAI），同国家重试。
+            if sms_provider.is_phone_blacklisted(country, phone):
+                logger.warning("[Codex][Browser] 号码 +%s 命中已用黑名单（country=%s），cancel 换号，不提交 OpenAI", phone, country)
+                if activation_id:
+                    try:
+                        sms_provider.cancel(activation_id, http)
+                    except Exception:
+                        pass
+                _sleep_before_phone_retry(attempt, max_retries)
+                raise sms_provider.SmsProviderError(f"号码 +{phone} 命中已用黑名单，同国家换号")
             try:
                 logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，country=%s，号码=+%s", attempt, max_retries, provider, country, phone)
                 logger.info("[Codex][Browser] 准备手机号输入页，重新设置新手机号")
@@ -1217,6 +1231,9 @@ def _do_phone_verification_if_present(driver) -> None:
                     raise sms_provider.SmsNoBalanceError(
                         f"接码平台余额不足，已停止换号止损：{err_text[:180]}"
                     ) from exc
+                # 号码已被使用（already used）→ 写入黑名单，同国家换号重试（不切国家）。
+                if "phone_used_or_max" in err_text:
+                    sms_provider.mark_phone_used(country, phone)
                 # 该国号码不可用（无号 / WhatsApp 通道 / 收码超时）→ 切下一国家。
                 if any(k in err_text for k in ("whatsapp_channel", "NO_NUMBERS", "暂无可用号码", "没有可用号码")) or isinstance(exc, (sms_provider.SmsNoNumbersError, sms_provider.SmsCodeTimeout)):
                     _sleep_before_phone_retry(attempt, max_retries)
