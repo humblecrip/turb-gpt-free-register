@@ -162,8 +162,9 @@ def scan_cpa_dead_accounts(
          探测是 IO 密集（下载+HTTPS），用 probe_workers 并发加快（默认 4，控制 OpenAI 限流）。
 
     hf.space 偶发连接重置/超时，用 proto._with_net_retry 对临时网络错误重试。
-    Returns: [{name, email, status, disabled, unavailable, success, failed, reauthable, dead_by}]
+    Returns: [{name, email, status, disabled, unavailable, success, failed, reauthable, dead_by, error_type}]
         dead_by: 'meta'（元数据判定）或 '401'（实际探测）或 'both'
+        error_type: status_message.error.type 归一化值（usage_limit / unauthorized / 其他 / ''）
     """
     files = proto._with_net_retry("扫描 CPA 失效号", proto.list_cpa_codex_auth_files)
     probe_candidates = []
@@ -219,6 +220,7 @@ def scan_cpa_dead_accounts(
             "failed": int(item.get("failed") or 0),
             "reauthable": is_email_reauthable(email),
             "dead_by": dead_by,
+            "error_type": parse_cpa_error_type(item),
         })
     return dead
 
@@ -560,19 +562,23 @@ def cpa_scan_relogin_pipeline(
     流程：
       1. scan_cpa_dead_accounts → 失效号列表
       2. 对每个失效号：
-         a. is_email_reauthable 过滤（不可重上跳过）
-         b. check_account_liveness(mode='auto') 测活：live → 跳过（扫出但实际活）
-         c. deactivated/failed → 查邮箱停用邮件：有 → 标记「账号已废」跳过重上；
+         a. CPA 元数据 disabled=True 或 error_type=usage_limit → 跳过重上
+            （不测活、不查邮箱；重上无意义：额度是账号级，重新授权不恢复）
+         b. is_email_reauthable 过滤（不可重上跳过）
+         c. check_account_liveness(mode='auto') 测活：live → 跳过（扫出但实际活）
+         d. deactivated/failed → 查邮箱停用邮件：有 → 标记「账号已废」跳过重上；
             无 → 进入重上队列
       3. run_reauth_pipeline(重上队列, delete_first=True, ...) 批量重上
 
     返回 {ok, scanned, dead_total, reauthable, live, deactivated_mailbox,
-          to_reauth, started, skipped, results, reauth}
+          skipped_disabled, skipped_usage_limit, to_reauth, started, skipped,
+          results, reauth}
     单号异常不中断整批（try/except 逐号包裹）。
     """
     results: list[dict] = []
     skipped: list[tuple[str, str]] = []
     scanned = dead_total = reauthable = live = deactivated_mailbox = 0
+    skipped_disabled = skipped_usage_limit = 0
     to_reauth: list[str] = []
 
     try:
@@ -585,7 +591,8 @@ def cpa_scan_relogin_pipeline(
         return {
             "ok": False, "error": f"扫描失败: {type(exc).__name__}: {str(exc)[:300]}",
             "scanned": 0, "dead_total": 0, "reauthable": 0, "live": 0,
-            "deactivated_mailbox": 0, "to_reauth": [], "started": [],
+            "deactivated_mailbox": 0, "skipped_disabled": 0, "skipped_usage_limit": 0,
+            "to_reauth": [], "started": [],
             "skipped": [], "results": [], "reauth": {},
         }
 
@@ -601,14 +608,45 @@ def cpa_scan_relogin_pipeline(
         email = str(item.get("email") or "").strip()
         if not email:
             continue
-        if max_total > 0 and len(to_reauth) >= max_total:
-            entry = {"email": email, "status": "skipped", "reason": f"超过 max_total={max_total} 上限"}
-            skipped.append((email, entry["reason"]))
-            results.append(entry)
-            continue
-        scanned += 1
         entry: dict = {"email": email, "status": "skipped", "reason": ""}
         try:
+            # 测活前判定：CPA 已停用 / 额度用完 → 直接跳过重上（不烧 OTP、不查邮箱）。
+            # 必须放在 max_total 之前：否则队列满时这些号会被当 max_total 跳过，
+            # 原因与 skipped_disabled/skipped_usage_limit 计数都不对。
+            if item.get("disabled"):
+                scanned += 1
+                entry["status"] = "skipped"
+                entry["reason"] = "CPA 已停用，跳过重上"
+                entry["skip_reason"] = "disabled"
+                skipped_disabled += 1
+                skipped.append((email, entry["reason"]))
+                results.append(entry)
+                if callback:
+                    try:
+                        callback(entry)
+                    except Exception:
+                        pass
+                continue
+            if str(item.get("error_type") or "").strip() == "usage_limit":
+                scanned += 1
+                entry["status"] = "skipped"
+                entry["reason"] = "额度已用完（usage_limit），跳过重上"
+                entry["skip_reason"] = "usage_limit"
+                skipped_usage_limit += 1
+                skipped.append((email, entry["reason"]))
+                results.append(entry)
+                if callback:
+                    try:
+                        callback(entry)
+                    except Exception:
+                        pass
+                continue
+            if max_total > 0 and len(to_reauth) >= max_total:
+                entry["reason"] = f"超过 max_total={max_total} 上限"
+                skipped.append((email, entry["reason"]))
+                results.append(entry)
+                continue
+            scanned += 1
             reauthable_flag = item.get("reauthable")
             if reauthable_flag is None:
                 reauthable_flag = is_email_reauthable(email)
@@ -713,6 +751,8 @@ def cpa_scan_relogin_pipeline(
         "reauthable": reauthable,
         "live": live,
         "deactivated_mailbox": deactivated_mailbox,
+        "skipped_disabled": skipped_disabled,
+        "skipped_usage_limit": skipped_usage_limit,
         "to_reauth": to_reauth,
         "started": started,
         "skipped": skipped,

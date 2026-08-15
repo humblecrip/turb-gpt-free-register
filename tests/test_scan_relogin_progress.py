@@ -25,8 +25,8 @@ DEAD_ACCOUNTS = [
     {"name": "codex-a@example.com-free.json", "email": "a@example.com", "status": "error",
      "disabled": False, "unavailable": False, "success": 0, "failed": 30,
      "reauthable": True, "dead_by": "meta"},
-    {"name": "codex-b@example.com-free.json", "email": "b@example.com", "status": "disabled",
-     "disabled": True, "unavailable": False, "success": 0, "failed": 0,
+    {"name": "codex-b@example.com-free.json", "email": "b@example.com", "status": "error",
+     "disabled": False, "unavailable": False, "success": 0, "failed": 30,
      "reauthable": True, "dead_by": "meta"},
     {"name": "codex-c@example.com-free.json", "email": "c@example.com", "status": "error",
      "disabled": False, "unavailable": False, "success": 0, "failed": 30,
@@ -51,6 +51,8 @@ def _reset_state(batch_id: str = "20260815-000001") -> None:
             "reauthable": 0,
             "live": 0,
             "deactivated_mailbox": 0,
+            "skipped_disabled": 0,
+            "skipped_usage_limit": 0,
             "to_reauth": 0,
             "started": 0,
             "ok_count": 0,
@@ -125,6 +127,33 @@ class OnScanReloginEntryTests(unittest.TestCase):
         self.assertEqual(s["scanned"], 1)
         self.assertEqual(s["reauthable"], 0)
         self.assertEqual(s["live"], 0)
+
+    def test_scan_disabled_skip_updates_counts(self):
+        _reset_state("b1")
+        _on_scan_relogin_entry("b1", {
+            "email": "g@example.com", "status": "skipped",
+            "reason": "CPA 已停用，跳过重上", "skip_reason": "disabled",
+        })
+        s = _state_snapshot()
+        self.assertEqual(s["scanned"], 1)
+        self.assertEqual(s["skipped_disabled"], 1)
+        self.assertEqual(s["skipped_usage_limit"], 0)
+        self.assertEqual(s["logs"][0]["status"], "skipped")
+        self.assertEqual(s["logs"][0]["skip_reason"], "disabled")
+        self.assertIn("CPA 已停用", s["logs"][0]["reason"])
+
+    def test_scan_usage_limit_skip_updates_counts(self):
+        _reset_state("b1")
+        _on_scan_relogin_entry("b1", {
+            "email": "h@example.com", "status": "skipped",
+            "reason": "额度已用完（usage_limit），跳过重上", "skip_reason": "usage_limit",
+        })
+        s = _state_snapshot()
+        self.assertEqual(s["scanned"], 1)
+        self.assertEqual(s["skipped_disabled"], 0)
+        self.assertEqual(s["skipped_usage_limit"], 1)
+        self.assertEqual(s["logs"][0]["skip_reason"], "usage_limit")
+        self.assertIn("额度已用完", s["logs"][0]["reason"])
 
     def test_reauth_success_entry(self):
         _reset_state("b1")

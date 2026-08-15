@@ -6170,6 +6170,8 @@ function _scanReloginLogPill(log) {
   if (st === 'failed') return `<span class="pill scan-relogin-pill is-fail">重上失败</span>`;
   if (st === 'to_reauth') return `<span class="pill scan-relogin-pill is-info">待重上</span>`;
   if (st === 'deactivated_mailbox') return `<span class="pill scan-relogin-pill is-skip">停用跳过</span>`;
+  if (st === 'skipped' && log.skip_reason === 'disabled') return `<span class="pill scan-relogin-pill is-skip">CPA停用</span>`;
+  if (st === 'skipped' && log.skip_reason === 'usage_limit') return `<span class="pill scan-relogin-pill is-skip">额度用完</span>`;
   if (ls === 'live') return `<span class="pill scan-relogin-pill is-ok">仍活</span>`;
   return `<span class="pill scan-relogin-pill is-skip">跳过</span>`;
 }
@@ -6235,6 +6237,7 @@ const scanReloginUi = {
     {label: '扫', value: 'scanned'},
     {label: '失效', value: (s) => s.dead_total || s.scanned || 0, cls: 'is-dead'},
     {label: '测活仍活', value: 'live', cls: 'is-live'},
+    {label: '停用/额度', value: (s) => (s.skipped_disabled || 0) + (s.skipped_usage_limit || 0), cls: 'is-skip'},
     {label: '停用跳过', value: 'deactivated_mailbox', cls: 'is-skip'},
     {label: '重上', value: 'started', cls: 'is-info'},
     {label: '成功', value: 'ok_count', cls: 'is-ok'},

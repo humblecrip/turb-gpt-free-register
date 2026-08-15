@@ -49,6 +49,8 @@ _CPA_SCAN_RELOGIN_STATE: dict = {
     "reauthable": 0,
     "live": 0,
     "deactivated_mailbox": 0,
+    "skipped_disabled": 0,
+    "skipped_usage_limit": 0,
     "to_reauth": 0,
     "started": 0,
     "ok_count": 0,
@@ -98,6 +100,10 @@ def _on_scan_relogin_entry(batch_id: str, entry: dict) -> None:
             elif status == "to_reauth":
                 _CPA_SCAN_RELOGIN_STATE["to_reauth"] = _CPA_SCAN_RELOGIN_STATE.get("to_reauth", 0) + 1
                 _CPA_SCAN_RELOGIN_STATE["reauthable"] = _CPA_SCAN_RELOGIN_STATE.get("reauthable", 0) + 1
+            elif entry.get("skip_reason") == "disabled":
+                _CPA_SCAN_RELOGIN_STATE["skipped_disabled"] = _CPA_SCAN_RELOGIN_STATE.get("skipped_disabled", 0) + 1
+            elif entry.get("skip_reason") == "usage_limit":
+                _CPA_SCAN_RELOGIN_STATE["skipped_usage_limit"] = _CPA_SCAN_RELOGIN_STATE.get("skipped_usage_limit", 0) + 1
             reason = str(entry.get("reason") or liveness_error)
         if email:
             _CPA_SCAN_RELOGIN_STATE["current"] = email
@@ -109,6 +115,7 @@ def _on_scan_relogin_entry(batch_id: str, entry: dict) -> None:
             "reason": reason[:300],
             "liveness_status": liveness_status,
             "liveness_error": liveness_error[:300],
+            "skip_reason": str(entry.get("skip_reason") or ""),
         })
         if len(logs) > _CPA_SCAN_RELOGIN_LOG_LIMIT:
             del logs[:-_CPA_SCAN_RELOGIN_LOG_LIMIT]
@@ -2436,6 +2443,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "reauthable": 0,
                 "live": 0,
                 "deactivated_mailbox": 0,
+                "skipped_disabled": 0,
+                "skipped_usage_limit": 0,
                 "to_reauth": 0,
                 "started": 0,
                 "ok_count": 0,
@@ -2471,6 +2480,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "reauthable": ret.get("reauthable", 0),
                     "live": ret.get("live", 0),
                     "deactivated_mailbox": ret.get("deactivated_mailbox", 0),
+                    "skipped_disabled": ret.get("skipped_disabled", 0),
+                    "skipped_usage_limit": ret.get("skipped_usage_limit", 0),
                     "to_reauth": len(ret.get("to_reauth", []) or []),
                     "started": len(ret.get("started", []) or []),
                     "ok_count": reauth_ret.get("ok_count", 0),

@@ -21,8 +21,8 @@ DEAD_ACCOUNTS = [
     {"name": "codex-a@example.com-free.json", "email": "a@example.com", "status": "error",
      "disabled": False, "unavailable": False, "success": 0, "failed": 30,
      "reauthable": True, "dead_by": "meta"},
-    {"name": "codex-b@example.com-free.json", "email": "b@example.com", "status": "disabled",
-     "disabled": True, "unavailable": False, "success": 0, "failed": 0,
+    {"name": "codex-b@example.com-free.json", "email": "b@example.com", "status": "error",
+     "disabled": False, "unavailable": False, "success": 0, "failed": 30,
      "reauthable": True, "dead_by": "meta"},
     {"name": "codex-c@example.com-free.json", "email": "c@example.com", "status": "error",
      "disabled": False, "unavailable": False, "success": 0, "failed": 30,
@@ -198,6 +198,141 @@ class ScanReloginPipelineTests(unittest.TestCase):
         self.assertTrue(ret["ok"])
         self.assertEqual(ret["dead_total"], 0)
         mock_reauth.assert_not_called()
+
+
+class ScanReloginSkipDisabledTests(unittest.TestCase):
+    """CPA 停用 / 额度用完的号在测活前直接跳过重上（不烧 OTP、不查邮箱）。"""
+
+    def _run(self, dead, callback=None):
+        with patch.object(cpa_reauth, "scan_cpa_dead_accounts", return_value=dead), \
+             patch.object(cpa_reauth, "is_email_reauthable") as mock_reauthable, \
+             patch("core.account_liveness.check_account_liveness") as mock_liveness, \
+             patch.object(cpa_reauth, "check_mailbox_has_deactivation") as mock_mailbox, \
+             patch.object(cpa_reauth, "run_reauth_pipeline") as mock_reauth:
+            ret = cpa_reauth.cpa_scan_relogin_pipeline(max_total=50, callback=callback)
+            return ret, mock_reauthable, mock_liveness, mock_mailbox, mock_reauth
+
+    def test_disabled_account_skipped_before_liveness(self):
+        events = []
+        dead = [
+            {"name": "codex-x@example.com-free.json", "email": "x@example.com", "status": "disabled",
+             "disabled": True, "unavailable": False, "success": 0, "failed": 0,
+             "dead_by": "meta", "error_type": ""},
+        ]
+        ret, mock_reauthable, mock_liveness, mock_mailbox, mock_reauth = self._run(dead, callback=events.append)
+        self.assertEqual(ret["to_reauth"], [])
+        self.assertEqual(ret["skipped_disabled"], 1)
+        self.assertEqual(ret["skipped_usage_limit"], 0)
+        self.assertEqual(ret["scanned"], 1)
+        self.assertEqual(len(ret["skipped"]), 1)
+        self.assertIn("CPA 已停用", ret["skipped"][0][1])
+        entry = ret["results"][0]
+        self.assertEqual(entry["status"], "skipped")
+        self.assertEqual(entry["skip_reason"], "disabled")
+        self.assertIn("CPA 已停用", entry["reason"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["email"], "x@example.com")
+        self.assertEqual(events[0]["skip_reason"], "disabled")
+        # 跳过发生在测活之前：不判 reauthable、不测活、不查邮箱、不进重上队列
+        mock_reauthable.assert_not_called()
+        mock_liveness.assert_not_called()
+        mock_mailbox.assert_not_called()
+        mock_reauth.assert_not_called()
+
+    def test_usage_limit_account_skipped_before_liveness(self):
+        dead = [
+            {"name": "codex-y@example.com-free.json", "email": "y@example.com", "status": "error",
+             "disabled": False, "unavailable": False, "success": 0, "failed": 30,
+             "dead_by": "meta", "error_type": "usage_limit"},
+        ]
+        ret, mock_reauthable, mock_liveness, mock_mailbox, mock_reauth = self._run(dead)
+        self.assertEqual(ret["to_reauth"], [])
+        self.assertEqual(ret["skipped_usage_limit"], 1)
+        self.assertEqual(ret["skipped_disabled"], 0)
+        self.assertEqual(len(ret["skipped"]), 1)
+        self.assertIn("额度已用完", ret["skipped"][0][1])
+        entry = ret["results"][0]
+        self.assertEqual(entry["status"], "skipped")
+        self.assertEqual(entry["skip_reason"], "usage_limit")
+        self.assertIn("额度已用完（usage_limit）", entry["reason"])
+        mock_reauthable.assert_not_called()
+        mock_liveness.assert_not_called()
+        mock_mailbox.assert_not_called()
+        mock_reauth.assert_not_called()
+
+    def test_disabled_priority_over_usage_limit(self):
+        dead = [
+            {"name": "codex-z@example.com-free.json", "email": "z@example.com", "status": "disabled",
+             "disabled": True, "unavailable": False, "success": 0, "failed": 0,
+             "dead_by": "meta", "error_type": "usage_limit"},
+        ]
+        ret, _, mock_liveness, mock_mailbox, mock_reauth = self._run(dead)
+        entry = ret["results"][0]
+        self.assertEqual(entry["skip_reason"], "disabled")
+        self.assertIn("CPA 已停用", entry["reason"])
+        self.assertNotIn("额度已用完", entry["reason"])
+        self.assertEqual(ret["skipped_disabled"], 1)
+        self.assertEqual(ret["skipped_usage_limit"], 0)
+        mock_liveness.assert_not_called()
+        mock_mailbox.assert_not_called()
+        mock_reauth.assert_not_called()
+
+    def test_disabled_skip_wins_over_max_total(self):
+        """队列已满（max_total 到达）时，disabled/usage_limit 号仍按原因跳过，不进 max_total 分支。"""
+        # 先让 a 进队列占满 max_total=1，之后 n（disabled）必须按 disabled 原因跳过，
+        # 而不是被 max_total 分支吞掉（原因与计数都不对）。
+        dead = [
+            {"name": "codex-a@example.com-free.json", "email": "a@example.com", "status": "error",
+             "disabled": False, "unavailable": False, "success": 0, "failed": 30,
+             "reauthable": True, "dead_by": "meta", "error_type": ""},
+            {"name": "codex-n@example.com-free.json", "email": "n@example.com", "status": "disabled",
+             "disabled": True, "unavailable": False, "success": 0, "failed": 0,
+             "reauthable": True, "dead_by": "meta", "error_type": "usage_limit"},
+        ]
+        with patch.object(cpa_reauth, "scan_cpa_dead_accounts", return_value=dead), \
+             patch.object(cpa_reauth, "is_email_reauthable", return_value=True), \
+             patch("core.account_liveness.check_account_liveness",
+                   return_value={"ok": False, "status": "failed", "error": "AT 过期"}), \
+             patch.object(cpa_reauth, "check_mailbox_has_deactivation",
+                          return_value={"deactivated": False, "source": "outlook"}), \
+             patch.object(cpa_reauth, "run_reauth_pipeline", return_value=REAUTH_RET) as mock_reauth:
+            ret = cpa_reauth.cpa_scan_relogin_pipeline(max_total=1)
+        self.assertEqual(ret["to_reauth"], ["a@example.com"])
+        self.assertEqual(ret["skipped_usage_limit"], 0)
+        self.assertEqual(ret["skipped_disabled"], 1)
+        statuses = {r["email"]: r for r in ret["results"]}
+        self.assertEqual(statuses["n@example.com"]["skip_reason"], "disabled")
+        self.assertIn("CPA 已停用", statuses["n@example.com"]["reason"])
+        self.assertNotIn("max_total", statuses["n@example.com"]["reason"])
+        mock_reauth.assert_called_once()
+        args, _ = mock_reauth.call_args
+        self.assertEqual(args[0], ["a@example.com"])
+
+    def test_scan_dead_includes_error_type(self):
+        item = {
+            "name": "codex-q@example.com-free.json", "email": "q@example.com",
+            "status": "disabled", "disabled": True, "unavailable": False,
+            "success": 0, "failed": 0,
+            "status_message": '{"error":{"type":"usage_limit_reached","message":"limit reached"}}',
+        }
+        with patch.object(cpa_reauth, "is_email_reauthable", return_value=False), \
+             patch.object(cpa_reauth.proto, "_with_net_retry", return_value=[item]):
+            dead = cpa_reauth.scan_cpa_dead_accounts(probe_401=False)
+        self.assertEqual(len(dead), 1)
+        self.assertTrue(dead[0]["disabled"])
+        self.assertEqual(dead[0]["error_type"], "usage_limit")
+
+    def test_scan_dead_error_type_empty_without_status_message(self):
+        item = {
+            "name": "codex-r@example.com-free.json", "email": "r@example.com",
+            "status": "error", "disabled": False, "unavailable": False,
+            "success": 0, "failed": 30,
+        }
+        with patch.object(cpa_reauth, "is_email_reauthable", return_value=False), \
+             patch.object(cpa_reauth.proto, "_with_net_retry", return_value=[item]):
+            dead = cpa_reauth.scan_cpa_dead_accounts(probe_401=False)
+        self.assertEqual(len(dead), 1)
+        self.assertEqual(dead[0]["error_type"], "")
 
 
 if __name__ == "__main__":
