@@ -1215,7 +1215,7 @@ def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "
 def _do_phone_verification(session: BrowserSession) -> None:
     """
     用接码平台拿号 → add-phone/send 发短信 → 收码 → phone-otp/validate。
-    一个号收不到码或被 OpenAI 拒就取消换号，最多 SMS_MAX_RETRIES 次（热加载）。
+    多轮国家队列（主队列+兜底池）取号，每轮最多 SMS_MAX_RETRIES 次换号（热加载）。
 
     实际平台适配在 core.sms_provider：
         - SMS_PROVIDER="grizzly"：GrizzlySMS handler_api.php
@@ -1224,129 +1224,115 @@ def _do_phone_verification(session: BrowserSession) -> None:
     http = sms_provider._http()
     max_retries = _cfg.SMS_MAX_RETRIES
     provider = _sms_provider_name()
-    # 国家优先级队列：manual=配置(SMS_COUNTRY+备选)，auto_*=价格/成功率排序；
-    # iCloud 工作流选中的国家由 sms_provider 前置到队列头。
-    country_queue = sms_provider.resolve_country_queue()
-    country_idx = 0
-    try:
-        last_err = None
-        for attempt in range(1, max_retries + 1):
-            activation_id = None
+
+    def try_country(country: str, round_no: int, attempt: int) -> bool:
+        """单个国家的一次号码尝试：取号→发短信→收码→验码。
+
+        失败按类型抛异常，由共享循环决定切国家/换号/判平台问题：
+            SmsNoNumbersError → 该国不可用，切下一国家
+            SmsProviderError  → 平台接口异常，同国家换号
+            SmsNoBalanceError → 立即透传
+        """
+        activation_id = None
+        try:
+            activation_id, phone = sms_provider.acquire_number(http, country=country)
+        except sms_provider.SmsNoBalanceError:
+            raise
+        except sms_provider.SmsNoNumbersError:
+            raise
+        except sms_provider.SmsProviderError as exc:
+            logger.warning(f"[Codex] 接码尝试 {attempt} 取号失败（平台异常）：{exc}")
+            _sleep_before_phone_retry(attempt, max_retries)
+            raise
+        logger.info(
+            f"[Codex] 手机验证尝试 {attempt}/{max_retries}，"
+            f"provider={provider}, country={country}, activation_id={activation_id}, 号码=+{phone}"
+        )
+
+        # 取号成功后的任何失败（发短信/接口异常/收码超时/验码失败）→ 释放号码 + 记录失败，
+        # 由共享循环决定切国家还是同国家换号；余额不足立即透传不重试。
+        try:
+            # 发短信
+            send_resp = _post_json(
+                session,
+                "https://auth.openai.com/api/accounts/add-phone/send",
+                {"phone_number": f"+{phone}", "channel": "sms"},
+                referer="https://auth.openai.com/add-phone",
+            )
+            send_text = _response_text(send_resp)
+            send_reason = _phone_failure_reason(send_text, send_resp.status_code)
+            if send_resp.status_code not in (200, 204) or send_reason:
+                # 号码无效 / 无法发送 / WhatsApp 通道 / 限流等 → 释放当前号并换号。
+                logger.warning(
+                    f"[Codex] add-phone/send 未成功 reason={send_reason or 'unknown'}, "
+                    f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
+                )
+                if send_reason in ("whatsapp_channel", "phone_used_or_max", "invalid_phone"):
+                    # 果断换国家：该国号码走 WhatsApp 或已被使用/格式问题，切到队列下一个国家
+                    raise sms_provider.SmsNoNumbersError(
+                        f"add-phone/send {send_reason}，国家 {country} 号码不可用"
+                    )
+                raise sms_provider.SmsProviderError(
+                    f"add-phone/send 未成功 reason={send_reason or 'unknown'}"
+                )
+
+            # 通知平台短信已发出（status=1）
+            sms_provider.set_status(activation_id, 1, http=http)
+
+            # 定时轮询接码平台获取短信。wait_for_sms_code 内部按 SMS_POLL_INTERVAL 轮询，
+            # 最长等待 SMS_CODE_WAIT；超时立即取消当前号并换号。
             try:
-                country = country_queue[min(country_idx, len(country_queue) - 1)]
-                activation_id, phone = sms_provider.acquire_number(http, country=country)
                 logger.info(
-                    f"[Codex] 手机验证尝试 {attempt}/{max_retries}，"
-                    f"provider={provider}, country={country}, activation_id={activation_id}, 号码=+{phone}"
+                    f"[Codex] 短信已发送，开始轮询验证码 activation_id={activation_id}, "
+                    f"wait={_cfg.SMS_CODE_WAIT}s, interval={_cfg.SMS_POLL_INTERVAL}s"
+                )
+                sms_code = sms_provider.wait_for_sms_code(activation_id, http)
+            except sms_provider.SmsCodeTimeout:
+                logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
+                # 短信超时多半是号码实际走了 WhatsApp 通道收不到码，果断切下一个国家
+                raise sms_provider.SmsNoNumbersError(
+                    f"号码 +{phone} 短信超时，国家 {country} 不可用"
                 )
 
-                # 发短信
-                send_resp = _post_json(
-                    session,
-                    "https://auth.openai.com/api/accounts/add-phone/send",
-                    {"phone_number": f"+{phone}", "channel": "sms"},
-                    referer="https://auth.openai.com/add-phone",
+            # 验手机码
+            val_resp = _post_json(
+                session,
+                "https://auth.openai.com/api/accounts/phone-otp/validate",
+                {"code": sms_code},
+                referer="https://auth.openai.com/phone-verification",
+            )
+            if val_resp.status_code != 200:
+                val_text = _response_text(val_resp)
+                val_reason = _phone_failure_reason(val_text, val_resp.status_code) or 'code_rejected'
+                logger.warning(
+                    f"[Codex] phone-otp/validate 失败 reason={val_reason}, status={val_resp.status_code}: "
+                    f"{val_text[:240]}，换号重试"
                 )
-                send_text = _response_text(send_resp)
-                send_reason = _phone_failure_reason(send_text, send_resp.status_code)
-                if send_resp.status_code not in (200, 204) or send_reason:
-                    # 号码无效 / 无法发送 / WhatsApp 通道 / 限流等 → 释放当前号并换号。
-                    logger.warning(
-                        f"[Codex] add-phone/send 未成功 reason={send_reason or 'unknown'}, "
-                        f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
-                    )
-                    sms_provider.cancel(activation_id, http)
-                    sms_provider.record_sms_result(country, False)
-                    # 果断换号策略：
-                    #   whatsapp_channel → 该国家号码走 WhatsApp 无法接码，切到队列下一个国家
-                    #   phone_used_or_max → 该号码已被 OpenAI 使用，同样切国家拿新号
-                    #   invalid_phone    → 号码格式问题，切国家
-                    if send_reason in ("whatsapp_channel", "phone_used_or_max", "invalid_phone"):
-                        if country_idx + 1 < len(country_queue):
-                            country_idx += 1
-                            logger.warning(
-                                f"[Codex] {send_reason}，果断切换国家: "
-                                f"{country_queue[country_idx-1]} → {country_queue[country_idx]}"
-                            )
-                    _sleep_before_phone_retry(attempt, max_retries)
-                    continue
-
-                # 通知平台短信已发出（status=1）
-                sms_provider.set_status(activation_id, 1, http=http)
-
-                # 定时轮询接码平台获取短信。wait_for_sms_code 内部按 SMS_POLL_INTERVAL 轮询，
-                # 最长等待 SMS_CODE_WAIT；超时立即取消当前号并换号。
-                try:
-                    logger.info(
-                        f"[Codex] 短信已发送，开始轮询验证码 activation_id={activation_id}, "
-                        f"wait={_cfg.SMS_CODE_WAIT}s, interval={_cfg.SMS_POLL_INTERVAL}s"
-                    )
-                    sms_code = sms_provider.wait_for_sms_code(activation_id, http)
-                except sms_provider.SmsCodeTimeout:
-                    logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
-                    sms_provider.cancel(activation_id, http)
-                    sms_provider.record_sms_result(country, False)
-                    # 短信超时多半是号码实际走了 WhatsApp 通道收不到码，果断切下一个国家
-                    if country_idx + 1 < len(country_queue):
-                        country_idx += 1
-                        logger.warning(
-                            f"[Codex] 短信超时，果断切换国家: "
-                            f"{country_queue[country_idx-1]} → {country_queue[country_idx]}"
-                        )
-                    _sleep_before_phone_retry(attempt, max_retries)
-                    continue
-
-                # 验手机码
-                val_resp = _post_json(
-                    session,
-                    "https://auth.openai.com/api/accounts/phone-otp/validate",
-                    {"code": sms_code},
-                    referer="https://auth.openai.com/phone-verification",
+                raise sms_provider.SmsProviderError(
+                    f"phone-otp/validate 失败 reason={val_reason}"
                 )
-                if val_resp.status_code != 200:
-                    val_text = _response_text(val_resp)
-                    val_reason = _phone_failure_reason(val_text, val_resp.status_code) or 'code_rejected'
-                    logger.warning(
-                        f"[Codex] phone-otp/validate 失败 reason={val_reason}, status={val_resp.status_code}: "
-                        f"{val_text[:240]}，换号重试"
-                    )
-                    sms_provider.cancel(activation_id, http)
-                    sms_provider.record_sms_result(country, False)
-                    _sleep_before_phone_retry(attempt, max_retries)
-                    continue
 
-                # 成功
-                sms_provider.complete(activation_id, http)
-                sms_provider.record_sms_result(country, True)
-                logger.info("[Codex] 手机号验证通过")
-                return
+            # 成功
+            sms_provider.complete(activation_id, http)
+            sms_provider.record_sms_result(country, True)
+            logger.info("[Codex] 手机号验证通过")
+            return True
+        except sms_provider.SmsNoBalanceError:
+            raise
+        except sms_provider.SmsProviderError as exc:
+            # 已取到号的任何失败（含 set_status / wait_for_sms_code 非超时异常）→
+            # 释放号码并记录失败，避免白扣费与成功率失真；随后换号/切国家由共享循环处理。
+            logger.warning(f"[Codex] 号码 +{phone} 验证失败（平台异常）：{exc}")
+            sms_provider.cancel(activation_id, http)
+            sms_provider.record_sms_result(country, False)
+            _sleep_before_phone_retry(attempt, max_retries)
+            raise
 
-            except sms_provider.SmsNoBalanceError:
-                # 余额不足，重试无意义，直接抛
-                raise
-            except sms_provider.SmsNoNumbersError as exc:
-                # 当前国家无号，切换备选国家
-                if country_idx + 1 < len(country_queue):
-                    country_idx += 1
-                    logger.warning(
-                        f"[Codex] {exc}，切换国家: {country_queue[country_idx-1]} → {country_queue[country_idx]}"
-                    )
-                    continue
-                last_err = exc
-                logger.warning(f"[Codex] 所有国家均无号：{country_queue}")
-                break
-            except sms_provider.SmsProviderError as exc:
-                last_err = exc
-                logger.warning(f"[Codex] 接码尝试 {attempt} 失败：{exc}")
-                if activation_id:
-                    sms_provider.cancel(activation_id, http)
-                    sms_provider.record_sms_result(country, False)
-                _sleep_before_phone_retry(attempt, max_retries)
-                continue
-
-        raise RuntimeError(
-            f"[Codex] 手机号验证重试 {max_retries} 次仍失败（provider={provider}）"
-            + (f"，最后错误：{last_err}" if last_err else "")
+    try:
+        sms_provider.run_country_queue_rounds(
+            try_country,
+            max_retries=max_retries,
+            log_prefix="[Codex]",
         )
     finally:
         http.close()

@@ -138,8 +138,13 @@ SMS_COUNTRY_SORT: str = "manual"
 # 单个号愿意支付的最高价格（留空=不限）。透传给 getNumber 的 maxPrice。
 SMS_MAX_PRICE: str = ""
 
-# 一个号收不到短信/被拒时，换号重试的最大次数
+# 一个号收不到短信/被拒时，换号重试的最大次数（每轮国家队列内换号次数）
 SMS_MAX_RETRIES: int = 10
+
+# 整队列多轮重试：主队列+兜底池全试完仍无号时，等待 SMS_ROUND_WAIT 秒进入下一轮；
+# 全部轮次仍失败则判定平台问题（无号/接口异常），错误信息透传 WebUI。
+SMS_ROUND_RETRIES: int = 3
+SMS_ROUND_WAIT: int = 30
 
 # 单个号等待短信的最长秒数（超时则取消该号换下一个）
 SMS_CODE_WAIT: int = 120
@@ -185,4 +190,4 @@ L_ADMIN_AUTH_CODE: str = env_str("L_ADMIN_AUTH_CODE", "")
 L_PHONE_PREFIX: str = ""
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_CALLBACK_VERIFY_RETRIES': 'int', 'CPA_CALLBACK_VERIFY_DELAY': 'float', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'CPA_REAUTH_DELETE_FIRST': 'bool', 'CPA_DEAD_FAILED_THRESHOLD': 'int', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_FALLBACK_COUNTRIES': 'str', 'SMS_COUNTRY_SORT': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})
+apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_CALLBACK_VERIFY_RETRIES': 'int', 'CPA_CALLBACK_VERIFY_DELAY': 'float', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'CPA_REAUTH_DELETE_FIRST': 'bool', 'CPA_DEAD_FAILED_THRESHOLD': 'int', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_FALLBACK_COUNTRIES': 'str', 'SMS_COUNTRY_SORT': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_ROUND_RETRIES': 'int', 'SMS_ROUND_WAIT': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})

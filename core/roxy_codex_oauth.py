@@ -1124,7 +1124,7 @@ def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "
 
 
 def _do_phone_verification_if_present(driver) -> None:
-    """如果页面要求手机号验证，则用当前 sms_provider 自动完成。"""
+    """如果页面要求手机号验证，则用当前 sms_provider 自动完成（多轮国家队列+换号）。"""
     provider = str(getattr(sms_provider._cfg, "SMS_PROVIDER", "") or "").strip().lower() if hasattr(sms_provider, "_cfg") else ""
     http = sms_provider._http()
     max_retries = int(getattr(sms_provider._cfg, "SMS_MAX_RETRIES", 10) or 10) if hasattr(sms_provider, "_cfg") else 10
@@ -1143,16 +1143,20 @@ def _do_phone_verification_if_present(driver) -> None:
             logger.info("[Codex][Browser] 未检测到手机号验证页，跳过手机步骤")
             return
 
-        last_err = None
-        # 国家优先级队列：manual=配置(SMS_COUNTRY+备选)，auto_*=价格/成功率排序；
-        # iCloud 工作流选中的国家由 sms_provider 前置到队列头。
-        country_queue = sms_provider.resolve_country_queue()
-        country_idx = 0
-        for attempt in range(1, max_retries + 1):
+        def try_country(country: str, round_no: int, attempt: int) -> bool:
+            """单个国家的一次号码尝试：取号→填手机号→收码→验码。"""
             activation_id = None
             try:
-                country = country_queue[min(country_idx, len(country_queue) - 1)]
                 activation_id, phone = sms_provider.acquire_number(http, country=country)
+            except sms_provider.SmsNoBalanceError:
+                raise
+            except sms_provider.SmsNoNumbersError:
+                raise
+            except sms_provider.SmsProviderError as exc:
+                logger.warning("[Codex][Browser] 接码尝试 %s 取号失败（平台异常）：%s", attempt, exc)
+                _sleep_before_phone_retry(attempt, max_retries)
+                raise
+            try:
                 logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，country=%s，号码=+%s", attempt, max_retries, provider, country, phone)
                 logger.info("[Codex][Browser] 准备手机号输入页，重新设置新手机号")
                 _ensure_add_phone_input(driver, reason=f"attempt-{attempt}")
@@ -1193,9 +1197,10 @@ def _do_phone_verification_if_present(driver) -> None:
                 logger.info("[Codex][Browser] 手机 OTP 提交后状态：%s", otp_outcome)
                 sms_provider.complete(activation_id, http)
                 sms_provider.record_sms_result(country, True)
-                return
+                return True
+            except sms_provider.SmsNoBalanceError:
+                raise
             except Exception as exc:
-                last_err = exc
                 err_text = str(exc) or ""
                 logger.warning("[Codex][Browser] 手机验证尝试失败，换号：%s", err_text[:240])
                 if activation_id:
@@ -1204,30 +1209,25 @@ def _do_phone_verification_if_present(driver) -> None:
                     except Exception:
                         pass
                     sms_provider.record_sms_result(country, False)
-                # 余额不足 / 无可用号码：重试多少次都不会成功，立即失败止损，
-                # 避免白等 N 轮换号重试（每轮还要刷新页面 + 随机等待）。
+                # 余额不足：重试多少次都不会成功，立即停止止损。
                 if any(k in err_text for k in (
-                    "NO_BALANCE", "NO_NUMBERS", "BALANCE", "余额不足",
-                    "暂无可用号码", "没有可用号码", "insufficient", "not enough balance",
+                    "NO_BALANCE", "BALANCE", "余额不足",
+                    "insufficient", "not enough balance",
                 )):
-                    raise RuntimeError(
-                        f"接码平台余额不足或无可用号码，已停止换号止损：{err_text[:180]}"
+                    raise sms_provider.SmsNoBalanceError(
+                        f"接码平台余额不足，已停止换号止损：{err_text[:180]}"
                     ) from exc
-                # 果断换国家策略：
-                #   whatsapp_channel / SmsCodeTimeout → 该国家号码走 WhatsApp 或收不到码，切下一个国家
-                #   SmsNoNumbersError             → 该国家无号，切下一个国家
-                _exc_str = str(exc)
-                if any(k in _exc_str for k in ("whatsapp_channel", "SmsCodeTimeout", "NO_NUMBERS")) or isinstance(exc, sms_provider.SmsNoNumbersError):
-                    if country_idx + 1 < len(country_queue):
-                        country_idx += 1
-                        logger.warning("[Codex][Browser] 果断切换国家: %s → %s", country_queue[country_idx - 1], country_queue[country_idx])
-                if "invalid_auth_step" in _exc_str:
+                # 该国号码不可用（无号 / WhatsApp 通道 / 收码超时）→ 切下一国家。
+                if any(k in err_text for k in ("whatsapp_channel", "NO_NUMBERS", "暂无可用号码", "没有可用号码")) or isinstance(exc, (sms_provider.SmsNoNumbersError, sms_provider.SmsCodeTimeout)):
+                    _sleep_before_phone_retry(attempt, max_retries)
+                    raise sms_provider.SmsNoNumbersError(f"{err_text[:180]}") from exc
+                if "invalid_auth_step" in err_text:
                     raise RuntimeError(
                         "手机号流程进入 invalid_auth_step，说明授权状态还未从 email-verification 正常跳转或已失效；"
                         "已停止继续换号，避免继续消耗号码"
                     ) from exc
-                # 如果已经离开手机号/验证码相关页面，认为通过或不再需要；
-                # 如果仍在 phone-verification，则下一轮必须回 add-phone 重新填新号码再提交。
+                # 其他异常（浏览器/页面/接口）→ 视为平台接口异常，同国家换号重试；
+                # 如果已经离开手机号/验证码相关页面，认为通过或不再需要。
                 try:
                     if _is_phone_code_page(driver):
                         logger.info("[Codex][Browser] 当前仍在手机验证码页，下一轮将返回 add-phone 重新设置新号码")
@@ -1238,11 +1238,17 @@ def _do_phone_verification_if_present(driver) -> None:
                         logger.info("[Codex][Browser] 仍处于手机号流程，继续换号重试")
                     else:
                         logger.info("[Codex][Browser] 手机输入页已消失，继续后续流程")
-                        return
+                        return True
                 if attempt < max_retries:
-                    _refresh_add_phone_for_retry(driver, reason=str(exc)[:120])
+                    _refresh_add_phone_for_retry(driver, reason=err_text[:120])
                 _sleep_before_phone_retry(attempt, max_retries)
-        raise RuntimeError(f"Roxy 手机验证重试 {max_retries} 次仍失败，最后错误：{last_err}")
+                raise sms_provider.SmsProviderError(f"{err_text[:180]}") from exc
+
+        sms_provider.run_country_queue_rounds(
+            try_country,
+            max_retries=max_retries,
+            log_prefix="[Codex][Browser]",
+        )
     finally:
         try:
             http.close()

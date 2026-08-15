@@ -585,6 +585,14 @@ EDITABLE_FIELDS = [
         "label": "换号重试次数", "help": "一个号收不到短信/被OpenAI拒时换下一个号，最多重试几次",
     },
     {
+        "key": "SMS_ROUND_RETRIES", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "整队列重试轮数", "help": "主队列+兜底池全试完仍无号时，等待后进入下一轮；默认 3 轮后仍失败判定平台问题",
+    },
+    {
+        "key": "SMS_ROUND_WAIT", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "轮间等待(秒)", "help": "整轮国家队列全部失败后，进入下一轮前的等待秒数",
+    },
+    {
         "key": "SMS_CODE_WAIT", "file": "codex.py", "type": "int", "group": "接码平台",
         "label": "单号等短信(秒)", "help": "单个号等待短信到达的最长秒数，超时则换号",
     },

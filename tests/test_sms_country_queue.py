@@ -188,14 +188,14 @@ class CountryQueueStatsTests(unittest.TestCase):
 
 
 class CountryQueueCallSiteTests(unittest.TestCase):
-    def test_codex_oauth_uses_resolve_country_queue(self):
+    def test_codex_oauth_uses_shared_round_loop(self):
         src = inspect.getsource(codex_oauth._do_phone_verification)
-        self.assertIn("resolve_country_queue", src)
+        self.assertIn("run_country_queue_rounds", src)
         self.assertNotIn('"54", "76", "73", "33"', src)
 
-    def test_roxy_codex_oauth_uses_resolve_country_queue(self):
+    def test_roxy_codex_oauth_uses_shared_round_loop(self):
         src = inspect.getsource(roxy_codex_oauth._do_phone_verification_if_present)
-        self.assertIn("resolve_country_queue", src)
+        self.assertIn("run_country_queue_rounds", src)
         self.assertNotIn('"54", "76", "73", "33"', src)
 
 

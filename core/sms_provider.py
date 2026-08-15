@@ -58,6 +58,10 @@ class SmsCodeTimeout(SmsProviderError):
     """单个号等短信超时（OpenAI 没发或没到达）。"""
 
 
+class SmsQueueExhaustedError(SmsProviderError):
+    """整队列多轮重试后仍失败（平台无号 / 平台接口异常）。"""
+
+
 def _http() -> CurlSession:
     s = CurlSession(impersonate=IMPERSONATE)
     s.timeout = _cfg.SMS_REQUEST_TIMEOUT
@@ -644,6 +648,9 @@ _SMS_THREAD_CTX = threading.local()
 # auto 排序时过滤成功率低于该阈值的国家
 _MIN_SUCCESS_RATE = 0.3
 
+# 判定「平台接口异常」的连续失败阈值：连续达到该次数即不再归因于无号
+_PLATFORM_ERROR_THRESHOLD = 5
+
 
 def set_country_prefer(country: str | None) -> None:
     """设置/清空"前置到队列头"的国家（如 iCloud 工作流选的接码国家）。"""
@@ -879,3 +886,131 @@ def resolve_country_queue(prefer: str | None = None, sort: str | None = None) ->
     else:
         queue = _manual_country_queue()
     return _prepend_prefer(queue, prefer)
+
+
+def _fallback_country_pool(base_queue: list[str], sort: str | None = None) -> list[str]:
+    """
+    grizzly 且 manual 排序时，追加「全平台有库存国家按价格升序」兜底池（排除主队列已试国家）。
+
+    auto_price / auto_success 的主队列本身已是全平台排序结果，不再扩展；
+    l/h 平台无价格数据，兜底回落主队列（靠多轮重试）。
+    """
+    sort = (
+        str(sort or "").strip().lower()
+        or _task_sort()
+        or str(getattr(_cfg, "SMS_COUNTRY_SORT", "") or "").strip().lower()
+    )
+    if sort in ("auto_price", "auto_success"):
+        return []
+    if _provider() != "grizzly":
+        return []
+    try:
+        pool = _auto_sorted_country_queue("auto_price")
+    except SmsNoBalanceError:
+        raise
+    except Exception as exc:
+        logger.warning(f"[SMS] 兜底国家池拉取失败，回落主队列多轮重试：{exc}")
+        return []
+    return [country for country in pool if country not in base_queue]
+
+
+def _round_country_queue(sort: str | None = None, prefer: str | None = None) -> list[str]:
+    """某一轮的完整国家队列：主队列 → 兜底池（去重）。"""
+    base = resolve_country_queue(sort=sort, prefer=prefer)
+    pool = _fallback_country_pool(base, sort=sort)
+    if not pool:
+        return base
+    return base + pool
+
+
+def run_country_queue_rounds(
+    try_country,
+    *,
+    sort: str | None = None,
+    prefer: str | None = None,
+    max_retries: int | None = None,
+    round_retries: int | None = None,
+    round_wait: int | None = None,
+    log_prefix: str = "[SMS]",
+):
+    """
+    多轮国家队列取号循环（codex_oauth / roxy_codex_oauth 共享）。
+
+    每轮按「主队列 → 兜底池」顺序尝试取号；整轮全失败等待 round_wait 秒进入下一轮；
+    全部轮次仍失败 → 抛 SmsQueueExhaustedError 并按失败类型分层：
+      - 无号主导 → 消息含「接码平台当前无可用号码，已重试 N 轮」
+      - 平台接口异常达阈值（连续 5 次或占主导）→ 消息含「接码平台接口异常」
+      - SmsNoBalanceError 立即透传（重试无意义）
+
+    try_country(country, round_no, attempt) 执行单个国家的一次号码尝试：
+      - 返回（任意值）即成功，循环立即返回该值
+      - 抛 SmsNoNumbersError → 该国无可用号码，切下一国家（不耗 attempt/轮次）
+      - 抛 SmsNoBalanceError → 立即透传
+      - 抛 SmsProviderError（其他）→ 记为平台接口异常，同国家换号重试
+    """
+    max_retries = max(
+        1, int(max_retries if max_retries is not None else (getattr(_cfg, "SMS_MAX_RETRIES", 10) or 10))
+    )
+    round_retries = max(
+        1, int(round_retries if round_retries is not None else (getattr(_cfg, "SMS_ROUND_RETRIES", 3) or 3))
+    )
+    round_wait = max(
+        0, int(round_wait if round_wait is not None else (getattr(_cfg, "SMS_ROUND_WAIT", 30) or 30))
+    )
+
+    no_numbers_total = 0
+    platform_errors_total = 0
+    consecutive_platform_errors = 0
+    last_err = None
+
+    for round_no in range(1, round_retries + 1):
+        queue = _round_country_queue(sort=sort, prefer=prefer)
+        if not queue:
+            queue = _manual_country_queue()
+        logger.info(f"{log_prefix} 第 {round_no}/{round_retries} 轮国家队列：{queue}")
+        country_idx = 0
+        attempts = 0
+        round_exhausted = False
+        while attempts < max_retries:
+            country = queue[min(country_idx, len(queue) - 1)]
+            try:
+                result = try_country(country, round_no, attempts + 1)
+                logger.info(f"{log_prefix} 第 {round_no} 轮取号成功 country={country}")
+                return result
+            except SmsNoBalanceError:
+                raise
+            except SmsNoNumbersError as exc:
+                no_numbers_total += 1
+                consecutive_platform_errors = 0
+                last_err = exc
+                if country_idx + 1 < len(queue):
+                    country_idx += 1
+                    logger.warning(f"{log_prefix} {exc}，切换国家：{country} → {queue[country_idx]}")
+                    continue
+                logger.warning(f"{log_prefix} 第 {round_no} 轮所有国家均无号：{queue}")
+                round_exhausted = True
+                break
+            except SmsProviderError as exc:
+                attempts += 1
+                platform_errors_total += 1
+                consecutive_platform_errors += 1
+                last_err = exc
+                logger.warning(f"{log_prefix} 接码尝试失败（平台接口异常）：{exc}")
+        if not round_exhausted:
+            logger.warning(f"{log_prefix} 第 {round_no} 轮换号次数用完（{max_retries}）仍失败")
+        if round_no < round_retries:
+            logger.info(f"{log_prefix} 第 {round_no} 轮全失败，{round_wait}s 后进入下一轮...")
+            time.sleep(round_wait)
+
+    if consecutive_platform_errors >= _PLATFORM_ERROR_THRESHOLD or (
+        platform_errors_total > 0 and platform_errors_total > no_numbers_total
+    ):
+        raise SmsQueueExhaustedError(
+            f"{log_prefix} 接码平台接口异常，已重试 {round_retries} 轮仍失败"
+            f"（平台错误 {platform_errors_total} 次，无号 {no_numbers_total} 次）"
+            + (f"，最后错误：{last_err}" if last_err else "")
+        )
+    raise SmsQueueExhaustedError(
+        f"{log_prefix} 接码平台当前无可用号码，已重试 {round_retries} 轮仍失败"
+        + (f"，最后错误：{last_err}" if last_err else "")
+    )
