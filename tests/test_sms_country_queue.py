@@ -14,7 +14,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from config import codex as codex_config
 from core import codex_oauth
@@ -24,18 +24,6 @@ from webui import config_editor
 
 _DEFAULT_STATS_FILE = Path(__file__).resolve().parent.parent / "data" / "sms_country_stats.json"
 
-_PRICES_RAW = {
-    "54": {"dr": {"cost": 2.5, "count": 100}},
-    "73": {"dr": {"cost": 1.0, "count": 50}},
-    "76": {"dr": {"cost": 0.5, "count": 0}},
-    "33": {"dr": {"cost": 1.5, "count": 30}},
-}
-_STATUS_RAW = {
-    "54": {"dr": 100},
-    "73": {"dr": 50},
-    "76": {"dr": 0},
-    "33": {"dr": 30},
-}
 # _fetch_price_info 解析后的格式（供 auto 排序测试直接 mock）
 _PRICES = {"54": 2.5, "73": 1.0, "76": 0.5, "33": 1.5}
 _STATUS = {"54": 100, "73": 50, "33": 30}
@@ -95,10 +83,101 @@ class CountryQueueAutoTests(unittest.TestCase):
         self.assertEqual(self._resolve("auto_success"), ["54", "73", "33"])
 
     def test_fetch_price_info_parses_raw_responses(self):
-        with patch.object(sms_provider, "_grizzly_json_action", side_effect=[_PRICES_RAW, _STATUS_RAW]):
+        # 422 修复：getPrices/getNumbersStatus 按候选国家子集逐国家查询（带 country 参数）
+        with patch.object(sms_provider, "_candidate_countries", return_value=["54", "73", "33"]), \
+             patch.object(sms_provider, "_grizzly_json_action", side_effect=[
+                 {"54": {"dr": {"cost": 2.5, "count": 100}}}, {"54": {"dr": 100}},
+                 {"73": {"dr": {"cost": 1.0, "count": 50}}}, {"73": {"dr": 50}},
+                 {"33": {"dr": {"cost": 1.5, "count": 30}}}, {"33": {"dr": 30}},
+             ]):
             prices, status = sms_provider._fetch_price_info()
-        self.assertEqual(prices, _PRICES)
-        self.assertEqual(status, _STATUS)
+        # 只查询候选子集（54/73/33），不再返回全平台（76 不在候选内）
+        self.assertEqual(prices, {"54": 2.5, "73": 1.0, "33": 1.5})
+        self.assertEqual(status, {"54": 100, "73": 50, "33": 30})
+
+    def test_grizzly_json_action_passes_country_param(self):
+        # 422 根因修复：getPrices/getNumbersStatus 必须带数字 country 参数
+        captured = []
+
+        def fake_request(http, params):
+            captured.append(dict(params))
+            return "{}"
+
+        with patch.object(codex_config, "SMS_SERVICE", "dr"), \
+             patch.object(sms_provider, "_request_grizzly", side_effect=fake_request), \
+             patch.object(sms_provider, "_http", return_value=Mock()):
+            sms_provider._grizzly_json_action("getPrices", country="54")
+            sms_provider._grizzly_json_action("getNumbersStatus", country="73")
+        self.assertEqual(captured[0]["action"], "getPrices")
+        self.assertEqual(captured[0]["country"], "54")
+        self.assertEqual(captured[0]["service"], "dr")
+        self.assertEqual(captured[1]["action"], "getNumbersStatus")
+        self.assertEqual(captured[1]["country"], "73")
+
+    def test_grizzly_json_action_omits_country_when_empty(self):
+        # getTopCountriesByService 等无需 country 的 action 不传 country 参数
+        captured = []
+
+        def fake_request(http, params):
+            captured.append(dict(params))
+            return "{}"
+
+        with patch.object(codex_config, "SMS_SERVICE", "dr"), \
+             patch.object(sms_provider, "_request_grizzly", side_effect=fake_request), \
+             patch.object(sms_provider, "_http", return_value=Mock()):
+            sms_provider._grizzly_json_action("getTopCountriesByService", country="")
+        self.assertEqual(captured[0]["action"], "getTopCountriesByService")
+        self.assertNotIn("country", captured[0])
+
+    def test_fetch_price_info_skips_single_country_failure(self):
+        # 单国家查询失败 → 跳过该国并告警，不影响其他候选国家
+        def fake_action(action, http=None, country=None):
+            if country == "76":
+                raise sms_provider.SmsProviderError("HTTP 422 ...")
+            if action == "getPrices":
+                return {country: {"dr": {"cost": 1.0, "count": 50}}}
+            return {country: {"dr": 50}}
+
+        with patch.object(sms_provider, "_candidate_countries", return_value=["76", "73"]), \
+             patch.object(sms_provider, "_grizzly_json_action", side_effect=fake_action):
+            prices, status = sms_provider._fetch_price_info()
+        self.assertEqual(prices, {"73": 1.0})
+        self.assertEqual(status, {"73": 50})
+
+    def test_fetch_price_info_all_fail_raises(self):
+        # 所有候选国家查询全部失败 → 抛错，由上层回落 manual 队列并告警
+        with patch.object(sms_provider, "_candidate_countries", return_value=["76", "54"]), \
+             patch.object(sms_provider, "_grizzly_json_action",
+                          side_effect=sms_provider.SmsProviderError("HTTP 422 ...")):
+            with self.assertRaises(sms_provider.SmsProviderError) as ctx:
+                sms_provider._fetch_price_info()
+        self.assertIn("全部失败", str(ctx.exception))
+
+    def test_fetch_price_info_balance_raises_immediately(self):
+        # 余额不足逐国家查询时立即透传（不跳过该国继续刷接口）
+        with patch.object(sms_provider, "_candidate_countries", return_value=["76", "73"]), \
+             patch.object(sms_provider, "_grizzly_json_action",
+                          side_effect=sms_provider.SmsNoBalanceError("余额不足")):
+            with self.assertRaises(sms_provider.SmsNoBalanceError):
+                sms_provider._fetch_price_info()
+
+    def test_candidate_countries_builds_subset(self):
+        # 候选 = manual 主队列 + prefer + 平台热门（去重；热门仅作补充）
+        with patch.object(codex_config, "SMS_COUNTRY", "73"), \
+             patch.object(codex_config, "SMS_FALLBACK_COUNTRIES", "33"), \
+             patch.object(sms_provider, "_top_countries_from_api", return_value=["54", "76", "187", "33"]), \
+             patch.object(sms_provider, "_task_country_prefer", return_value="187"):
+            candidates = sms_provider._candidate_countries()
+        self.assertEqual(candidates, ["73", "33", "187", "54", "76"])
+
+    def test_candidate_countries_top_failure_still_returns_base(self):
+        # 平台热门拉取失败 → 候选仍包含主队列，不中断
+        with patch.object(codex_config, "SMS_COUNTRY", "73"), \
+             patch.object(codex_config, "SMS_FALLBACK_COUNTRIES", "33"), \
+             patch.object(sms_provider, "_top_countries_from_api",
+                          side_effect=sms_provider.SmsProviderError("boom")):
+            candidates = sms_provider._candidate_countries()
+        self.assertEqual(candidates, ["73", "33"])
 
     def test_top_countries_parses_flat_format(self):
         with patch.object(sms_provider, "_grizzly_json_action", return_value={"54": 100, "73": 50, "33": 30}):

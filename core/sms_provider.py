@@ -295,6 +295,43 @@ def _normalize_h_phone(phone: str) -> str:
     return phone
 
 
+def _validate_phone_country(phone: str, country: str) -> str | None:
+    """校验取到的号码区号是否匹配请求国家；匹配返回 None，不匹配返回原因。
+
+    国家码未知时返回 None（跳过校验不误伤，打 DEBUG 日志）。
+    phone 为不带 + 的号码（可为带格式的原始值，内部规范化）。
+    """
+    country = str(country or "").strip()
+    dial_code = _COUNTRY_DIAL_CODES.get(country)
+    if not dial_code:
+        logger.debug(f"[SMS] 国家码 {country or '-'} 无区号映射，跳过号码区号校验")
+        return None
+    digits = _normalize_phone_digits(phone)
+    if not digits:
+        return None
+    if digits.startswith(dial_code):
+        return None
+    return f"号码 +{digits} 区号不匹配请求国家 {country}（应 +{dial_code}）"
+
+
+def _reject_wrong_country_phone(
+    activation_id: str, phone: str, country: str, http: CurlSession | None
+) -> None:
+    """区号校验不匹配：记录 WARNING、取消该号并抛 SmsNoNumbersError（切下一国家）。
+
+    平台串号视为该国号码不可用（不重复 try 同一号），由共享循环切下一国家。
+    """
+    reason = _validate_phone_country(phone, country)
+    if not reason:
+        return
+    logger.warning(f"[SMS] 平台串号：{reason}，id={activation_id}，已取消换号")
+    try:
+        cancel(activation_id, http=http)
+    except Exception as exc:
+        logger.warning(f"[SMS] 串号取消失败（继续换号）：{exc}")
+    raise SmsNoNumbersError(reason)
+
+
 def _h_phone_acquire_mode() -> str:
     """
     H 取号模式：
@@ -350,6 +387,7 @@ def acquire_number(
             if not activation_id or not phone:
                 raise SmsProviderError(f"L take-phone 响应缺少 item.id/item.phone：{str(data)[:200]}")
             _ACQUIRED_AT[activation_id] = time.time()
+            _reject_wrong_country_phone(activation_id, phone, country or _cfg.SMS_COUNTRY, http)
             logger.info(f"[SMS:L] 取号成功：id={activation_id}, phone=+{phone}")
             return activation_id, phone
 
@@ -382,6 +420,7 @@ def acquire_number(
             if not activation_id or not phone:
                 raise SmsProviderError(f"H {api_path.rsplit('/', 1)[-1]} 响应缺少 item.id/item.phone：{str(data)[:200]}")
             _ACQUIRED_AT[activation_id] = time.time()
+            _reject_wrong_country_phone(activation_id, phone, h_country, http)
             logger.info(
                 f"[SMS:H] 取号成功：mode={mode}, api={api_path}, id={activation_id}, phone=+{phone}, "
                 f"reused={bool(data.get('reused'))}, duplicate={bool(data.get('duplicate'))}"
@@ -406,6 +445,7 @@ def acquire_number(
         activation_id = parts[1].strip()
         phone = parts[2].strip()
         _ACQUIRED_AT[activation_id] = time.time()
+        _reject_wrong_country_phone(activation_id, phone, country or _cfg.SMS_COUNTRY, http)
         logger.info(f"[SMS] 取号成功：activation_id={activation_id}, phone=+{phone}")
         return activation_id, phone
     finally:
@@ -651,6 +691,23 @@ _MIN_SUCCESS_RATE = 0.3
 # 判定「平台接口异常」的连续失败阈值：连续达到该次数即不再归因于无号
 _PLATFORM_ERROR_THRESHOLD = 5
 
+# 国家码 → 国际区号（取号后校验号码区号，防平台串号）。
+# 平台为 sms-activate 兼容编号（33=哥伦比亚 / 73=巴西 / 187=美国），
+# 另含备用码（57=哥伦比亚区号 / 6=巴西备用）；未知国家码跳过校验不误伤。
+_COUNTRY_DIAL_CODES: dict[str, str] = {
+    "33": "57",    # 哥伦比亚
+    "57": "57",    # 哥伦比亚（备用码）
+    "73": "55",    # 巴西
+    "6": "55",     # 巴西（备用码）
+    "187": "1",    # 美国
+    "1": "1",      # 美国（备用码）
+    "54": "52",    # 墨西哥
+    "76": "244",   # 安哥拉
+}
+
+# 平台热门国家作为兜底候选补充时的上限（逐国家查询价格/库存，避免请求数过多）
+_TOP_COUNTRIES_CANDIDATE_LIMIT = 10
+
 
 def set_country_prefer(country: str | None) -> None:
     """设置/清空"前置到队列头"的国家（如 iCloud 工作流选的接码国家）。"""
@@ -711,9 +768,18 @@ def _manual_country_queue() -> list[str]:
     return queue or list(_DEFAULT_COUNTRY_QUEUE)
 
 
-def _grizzly_json_action(action: str, http: CurlSession | None = None) -> dict:
-    """调 Grizzly/HeroSMS 的 JSON 类 action（getPrices/getNumbersStatus/getTopCountriesByService）。"""
+def _grizzly_json_action(
+    action: str, http: CurlSession | None = None, country: str | None = None
+) -> dict:
+    """调 Grizzly/HeroSMS 的 JSON 类 action（getPrices/getNumbersStatus/getTopCountriesByService）。
+
+    getPrices / getNumbersStatus 要求 country 为数字（否则 HTTP 422
+    "Param 'country' must be a number"）；getTopCountriesByService 不带 country。
+    """
     params = {"action": action}
+    country = str(country or "").strip()
+    if country:
+        params["country"] = country
     if _cfg.SMS_SERVICE:
         params["service"] = _cfg.SMS_SERVICE
     own_http = http is None
@@ -732,28 +798,81 @@ def _grizzly_json_action(action: str, http: CurlSession | None = None) -> dict:
     return data
 
 
-def _fetch_price_info() -> tuple[dict, dict]:
-    """返回 (prices, numbers_status)：{country: 价格} 与 {country: 可用号量}。"""
-    prices_raw = _grizzly_json_action("getPrices")
-    status_raw = _grizzly_json_action("getNumbersStatus")
+def _candidate_countries() -> list[str]:
+    """候选国家子集：manual 主队列 + prefer + 平台热门（补充，上限 _TOP_COUNTRIES_CANDIDATE_LIMIT）。
+
+    GrizzlySMS/HeroSMS 的 getPrices/getNumbersStatus 只支持按 country 查询，
+    无法一次拉全平台库存；auto 排序/兜底池只能在候选子集内做价格排序。
+    """
+    candidates = []
+    for country in _manual_country_queue():
+        if country not in candidates:
+            candidates.append(country)
+    pref = _task_country_prefer() or _SMS_COUNTRY_PREFER
+    if pref and pref not in candidates:
+        candidates.append(pref)
+    try:
+        top = _top_countries_from_api()[:_TOP_COUNTRIES_CANDIDATE_LIMIT]
+    except Exception as exc:
+        logger.warning(f"[SMS] 拉取热门国家补充候选失败（忽略）：{exc}")
+        top = []
+    for country in top:
+        if country not in candidates:
+            candidates.append(country)
+    return candidates
+
+
+def _fetch_price_info(countries: list[str] | None = None) -> tuple[dict, dict]:
+    """返回 (prices, numbers_status)：{country: 价格} 与 {country: 可用号量}。
+
+    GrizzlySMS/HeroSMS 的 getPrices/getNumbersStatus 要求 country 参数为数字，
+    这里按候选国家子集逐国家查询（候选 = 主队列 + prefer + 平台热门补充），
+    避免 422 全平台拉取；单国家查询失败只跳过该国并告警。
+    """
+    countries = list(
+        dict.fromkeys(str(c).strip() for c in (countries or _candidate_countries()) if str(c or "").strip())
+    )
     service = _cfg.SMS_SERVICE
     prices: dict[str, float] = {}
     status: dict[str, int] = {}
-    for country, val in (prices_raw or {}).items():
-        service_val = val.get(service) if isinstance(val, dict) else None
-        if isinstance(service_val, dict):
+    last_exc = None
+    # 共享一个会话逐国家查询，避免每个国家/每次 action 都新建 curl 会话（N+1 开销）
+    own_http = True
+    http = _http()
+    try:
+        for country in countries:
             try:
-                prices[str(country)] = float(service_val.get("cost") or 0)
-            except (TypeError, ValueError):
-                pass
-    for country, val in (status_raw or {}).items():
-        if isinstance(val, dict):
-            count = val.get(service)
-            if isinstance(count, (int, float)) and count > 0:
-                status[str(country)] = int(count)
-        elif isinstance(val, (int, float)) and val > 0:
-            status[str(country)] = int(val)
-    return prices, status
+                prices_raw = _grizzly_json_action("getPrices", http=http, country=country)
+                status_raw = _grizzly_json_action("getNumbersStatus", http=http, country=country)
+            except SmsNoBalanceError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"[SMS] 国家 {country} 价格/库存查询失败（跳过该国）：{exc}")
+                continue
+            for c, val in (prices_raw or {}).items():
+                service_val = val.get(service) if isinstance(val, dict) else None
+                if isinstance(service_val, dict):
+                    try:
+                        prices[str(c)] = float(service_val.get("cost") or 0)
+                    except (TypeError, ValueError):
+                        pass
+            for c, val in (status_raw or {}).items():
+                if isinstance(val, dict):
+                    count = val.get(service)
+                    if isinstance(count, (int, float)) and count > 0:
+                        status[str(c)] = int(count)
+                elif isinstance(val, (int, float)) and val > 0:
+                    status[str(c)] = int(val)
+        if not prices and not status:
+            raise SmsProviderError(
+                f"候选国家价格/库存查询全部失败（{len(countries)} 个国家）"
+                + (f"：{last_exc}" if last_exc else "")
+            )
+        return prices, status
+    finally:
+        if own_http:
+            http.close()
 
 
 def _load_sms_stats() -> dict:
@@ -880,6 +999,8 @@ def resolve_country_queue(prefer: str | None = None, sort: str | None = None) ->
     if sort in ("auto_price", "auto_success"):
         try:
             queue = _auto_sorted_country_queue(sort)
+        except SmsNoBalanceError:
+            raise
         except Exception as exc:
             logger.warning(f"[SMS] 国家排序（{sort}）拉取失败，回落 manual 队列：{exc}")
             queue = _manual_country_queue()
@@ -909,7 +1030,7 @@ def _fallback_country_pool(base_queue: list[str], sort: str | None = None) -> li
     except SmsNoBalanceError:
         raise
     except Exception as exc:
-        logger.warning(f"[SMS] 兜底国家池拉取失败，回落主队列多轮重试：{exc}")
+        logger.warning(f"[SMS] 兜底国家池不可用，仅尝试主队列 {len(base_queue)} 个国家：{exc}")
         return []
     return [country for country in pool if country not in base_queue]
 
@@ -985,7 +1106,9 @@ def run_country_queue_rounds(
                 last_err = exc
                 if country_idx + 1 < len(queue):
                     country_idx += 1
-                    logger.warning(f"{log_prefix} {exc}，切换国家：{country} → {queue[country_idx]}")
+                    logger.warning(
+                        f"{log_prefix} 所选国家 {country} 无号，已 fallback 到 {queue[country_idx]}：{exc}"
+                    )
                     continue
                 logger.warning(f"{log_prefix} 第 {round_no} 轮所有国家均无号：{queue}")
                 round_exhausted = True

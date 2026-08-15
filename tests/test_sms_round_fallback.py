@@ -77,6 +77,19 @@ class FallbackPoolTests(unittest.TestCase):
             with self.assertRaises(sms_provider.SmsNoBalanceError):
                 sms_provider._fallback_country_pool(["73", "33"], sort="manual")
 
+    def test_fallback_pool_failure_logs_unavailable_warning(self):
+        # 兜底池不可用时 WARNING 明确「仅尝试主队列 N 个国家」，不再静默回落固定国家
+        with patch.object(codex_config, "SMS_PROVIDER", "grizzly"), \
+             patch.object(codex_config, "SMS_COUNTRY_SORT", "manual"), \
+             patch.object(sms_provider, "_auto_sorted_country_queue",
+                          side_effect=sms_provider.SmsProviderError("HTTP 422 ...")):
+            with self.assertLogs("core.sms_provider", level="WARNING") as logs:
+                pool = sms_provider._fallback_country_pool(["73", "33"], sort="manual")
+        self.assertEqual(pool, [])
+        self.assertTrue(
+            any("兜底国家池不可用，仅尝试主队列 2 个国家" in line for line in logs.output)
+        )
+
 
 class CountryQueueRoundsTests(unittest.TestCase):
     def setUp(self):
@@ -113,6 +126,19 @@ class CountryQueueRoundsTests(unittest.TestCase):
         # 73/33 无号不耗 attempt：第三次仍是 attempt=1，在 54 成功，无需轮间等待
         self.assertEqual(calls, [("73", 1), ("33", 1), ("54", 1)])
         sleep.assert_not_called()
+
+    def test_fallback_switch_logs_clear_warning(self):
+        # 需求 1：所选国家无号 fallback 必须打明确 WARNING「所选国家 X 无号，已 fallback 到 Y」
+        def try_country(country, round_no, attempt):
+            raise sms_provider.SmsNoNumbersError(f"{country} 无号")
+
+        with patch.object(sms_provider, "_round_country_queue", return_value=["33", "73"]), \
+             patch.object(sms_provider.time, "sleep"):
+            with self.assertLogs("core.sms_provider", level="WARNING") as logs:
+                with self.assertRaises(sms_provider.SmsQueueExhaustedError):
+                    sms_provider.run_country_queue_rounds(try_country, round_retries=1, round_wait=0)
+        joined = "\n".join(logs.output)
+        self.assertIn("所选国家 33 无号，已 fallback 到 73", joined)
 
     def test_fallback_pool_country_tried_after_main_queue(self):
         calls = []

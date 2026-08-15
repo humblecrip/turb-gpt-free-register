@@ -124,7 +124,8 @@ SMS_API_KEY: str = env_str("SMS_API_KEY", "")
 # 服务代码：OpenAI = "dr"
 SMS_SERVICE: str = "dr"
 
-# 国家代码：巴西 = "73"（优先） / 哥伦比亚 = "33" / 美国 = "187"
+# 国家代码（sms-activate 兼容编号）：哥伦比亚 = "33" / 巴西 = "73" / 美国 = "187"；
+# 取号后按 core/sms_provider._COUNTRY_DIAL_CODES（33→+57、73→+55、187→+1）校验区号防平台串号
 SMS_COUNTRY: str = "73"
 # 备选国家列表（逗号分隔），主国家无号时依次尝试
 SMS_FALLBACK_COUNTRIES: str = "33"
