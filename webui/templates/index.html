@@ -1872,7 +1872,7 @@
     .cpa-align-foot .jobs-tb-btn--primary:hover:not(:disabled) {
       background: #5a94ff; border-color: #5a94ff; color: #fff;
     }
-    #scanReloginModal:not(.hidden) {
+    .progress-modal:not(.hidden) {
       position: fixed; inset: 0; z-index: 1200;
       display: flex; align-items: center; justify-content: center;
       padding: 24px; box-sizing: border-box;
@@ -3128,7 +3128,7 @@
     </div>
   </div>
 </div>
-<div id="scanReloginModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="scanReloginTitle">
+<div id="scanReloginModal" class="progress-modal hidden" role="dialog" aria-modal="true" aria-labelledby="scanReloginTitle">
   <div class="scan-relogin-dialog" role="document">
     <div class="scan-relogin-head">
       <div class="scan-relogin-head-main">
@@ -3145,6 +3145,26 @@
     <div class="scan-relogin-foot">
       <span class="scan-relogin-foot-hint" id="scanReloginHint">完成后可滚动查看完整报告，点关闭才关</span>
       <button type="button" class="jobs-tb-btn" id="btnCancelScanRelogin">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="reauthProgressModal" class="progress-modal hidden" role="dialog" aria-modal="true" aria-labelledby="reauthProgressTitle">
+  <div class="scan-relogin-dialog" role="document">
+    <div class="scan-relogin-head">
+      <div class="scan-relogin-head-main">
+        <h3 id="reauthProgressTitle">重上失效号 · 实时进度</h3>
+        <p>删除 CPA 失效凭证 → 复用原邮箱补跑 Codex OAuth → 自动回传 CPA；运行中实时更新，完成后保留本面板供查看。</p>
+      </div>
+      <button type="button" class="scan-relogin-close" id="btnCloseReauthProgress" aria-label="关闭">×</button>
+    </div>
+    <div class="scan-relogin-body">
+      <div class="scan-relogin-summary" id="reauthProgressSummary"></div>
+      <div class="scan-relogin-current hidden" id="reauthProgressCurrent"></div>
+      <div class="scan-relogin-loglist" id="reauthProgressLogs"></div>
+    </div>
+    <div class="scan-relogin-foot">
+      <span class="scan-relogin-foot-hint" id="reauthProgressHint">完成后可滚动查看完整报告，点关闭才关</span>
+      <button type="button" class="jobs-tb-btn" id="btnCancelReauthProgress">关闭</button>
     </div>
   </div>
 </div>
@@ -3653,6 +3673,7 @@ function updateModalScrollLock() {
     || !$('#outlookImportModal').classList.contains('hidden')
     || !$('#cpaAlignModal').classList.contains('hidden')
     || !$('#scanReloginModal').classList.contains('hidden')
+    || !$('#reauthProgressModal').classList.contains('hidden')
     || !$('#smsConfirmModal').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
@@ -5513,6 +5534,7 @@ async function copySelectedAccountTokens() {
   initBatchTagSelectV2();
   bindCpaAlignModal();
   bindScanReloginModal();
+  bindReauthProgressModal();
 })();
 
 // ---------- 账号工具栏「更多」下拉 ----------
@@ -6087,6 +6109,8 @@ async function reauthCpaDead() {
     onConfirm: async (sms) => {
       const btn = document.getElementById('btnReauthCpaDeadV2');
       if (btn) btn.disabled = true;
+      openReauthProgressPanel();
+      renderReauthProgress({ running: true, ok_count: 0, failed_count: 0, logs: [], current: '' });
       try {
         const r = await api('/api/cpa/reauth/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ emails, sms_country: sms.sms_country, sms_sort: sms.sms_sort }) });
         showToast(r.message || '已开始重上号');
@@ -6094,45 +6118,48 @@ async function reauthCpaDead() {
       } catch(err) {
         showToast('触发重上号失败: ' + err.message);
         if (btn) btn.disabled = false;
+        renderReauthProgress({ running: false, ok_count: 0, failed_count: 0, logs: [], current: '', error: err.message || '触发失败' });
       }
     },
   });
 }
+let reauthPollTimer = null;
 function _pollCpaReauthStatus() {
-  const poll = setInterval(async () => {
+  if (reauthPollTimer) clearInterval(reauthPollTimer);
+  reauthPollTimer = setInterval(async () => {
     try {
       const r = await api('/api/cpa/reauth/status');
+      renderReauthProgress(r);
       if (!r.running) {
-        clearInterval(poll);
+        clearInterval(reauthPollTimer);
+        reauthPollTimer = null;
         const btn = document.getElementById('btnReauthCpaDeadV2');
         if (btn) btn.disabled = false;
         const ok = r.ok_count || 0, fail = r.failed_count || 0;
-        if (ok + fail > 0) {
-          showToast(`重上号完成：成功 ${ok}，失败 ${fail}`);
+        const errMsg = r.error ? `（${r.error}）` : '';
+        if (ok + fail > 0 || errMsg) {
+          showToast(`重上号完成：成功 ${ok}，失败 ${fail}${errMsg}`);
         }
         loadCodex();
         scanCpaDead();
       }
     } catch(e) { /* 忽略轮询瞬时错误 */ }
-  }, 5000);
+  }, 2500);
 }
 
-// ---------- CPA 一键扫+重上（scan → probe → mailbox deactivated → reauth） ----------
-// 实时进度气泡面板状态
-let scanReloginRenderedLogs = 0;
+// ---------- 通用实时进度日志面板（scan-relogin / reauth 共用） ----------
 let scanReloginPollTimer = null;
-function openScanReloginPanel() {
-  const modal = $('#scanReloginModal');
+let progressRenderedLogs = {};  // 每个面板已渲染日志条数（key=日志容器 selector）
+function _toggleProgressModal(modalSel, hidden) {
+  const modal = $(modalSel);
   if (!modal) return;
-  modal.classList.remove('hidden');
+  modal.classList.toggle('hidden', !!hidden);
   updateModalScrollLock();
 }
-function closeScanReloginPanel() {
-  const modal = $('#scanReloginModal');
-  if (!modal) return;
-  modal.classList.add('hidden');
-  updateModalScrollLock();
-}
+function openScanReloginPanel() { _toggleProgressModal('#scanReloginModal', false); }
+function closeScanReloginPanel() { _toggleProgressModal('#scanReloginModal', true); }
+function openReauthProgressPanel() { _toggleProgressModal('#reauthProgressModal', false); }
+function closeReauthProgressPanel() { _toggleProgressModal('#reauthProgressModal', true); }
 function _scanReloginStatPill(label, value, cls) {
   return `<span class="scan-relogin-stat${cls ? ' ' + cls : ''}">${label} <b>${value}</b></span>`;
 }
@@ -6146,24 +6173,19 @@ function _scanReloginLogPill(log) {
   if (ls === 'live') return `<span class="pill scan-relogin-pill is-ok">仍活</span>`;
   return `<span class="pill scan-relogin-pill is-skip">跳过</span>`;
 }
-function renderScanReloginProgress(state) {
-  if (!state) return;
-  const summary = $('#scanReloginSummary');
-  const current = $('#scanReloginCurrent');
-  const logs = $('#scanReloginLogs');
-  const hint = $('#scanReloginHint');
+// ui: { summary, current, logs, hint, stats:[{label, value: key|fn, cls}], doneText?: fn(state) }
+function renderProgressPanel(state, ui) {
+  if (!state || !ui) return;
+  const summary = $(ui.summary);
+  const current = $(ui.current);
+  const logs = $(ui.logs);
+  const hint = $(ui.hint);
   const running = !!state.running;
-  const dead = state.dead_total || state.scanned || 0;
-  if (summary) {
-    summary.innerHTML = [
-      _scanReloginStatPill('扫', state.scanned || 0),
-      _scanReloginStatPill('失效', dead, 'is-dead'),
-      _scanReloginStatPill('测活仍活', state.live || 0, 'is-live'),
-      _scanReloginStatPill('停用跳过', state.deactivated_mailbox || 0, 'is-skip'),
-      _scanReloginStatPill('重上', state.started || 0, 'is-info'),
-      _scanReloginStatPill('成功', state.ok_count || 0, 'is-ok'),
-      _scanReloginStatPill('失败', state.failed_count || 0, 'is-fail'),
-    ].join('');
+  if (summary && Array.isArray(ui.stats)) {
+    summary.innerHTML = ui.stats.map(st => {
+      const v = typeof st.value === 'function' ? st.value(state) : (state[st.value] || 0);
+      return _scanReloginStatPill(st.label, v, st.cls || '');
+    }).join('');
   }
   if (current) {
     if (running && state.current) {
@@ -6175,16 +6197,19 @@ function renderScanReloginProgress(state) {
   }
   if (hint) {
     if (running) hint.textContent = '运行中…日志实时刷新，完成后保留本面板供查看';
+    else if (typeof ui.doneText === 'function') hint.textContent = ui.doneText(state);
     else if (state.error) hint.textContent = `出错：${state.error}。可点关闭收起面板`;
     else hint.textContent = '完成。可滚动查看完整报告，点关闭才关';
   }
   if (logs && Array.isArray(state.logs)) {
     const logList = state.logs;
-    if (logList.length < scanReloginRenderedLogs) {
+    const key = ui.logs;
+    let rendered = progressRenderedLogs[key] || 0;
+    if (logList.length < rendered) {
       logs.innerHTML = '';
-      scanReloginRenderedLogs = 0;
+      rendered = 0;
     }
-    const fresh = logList.slice(scanReloginRenderedLogs);
+    const fresh = logList.slice(rendered);
     if (fresh.length) {
       logs.insertAdjacentHTML('beforeend', fresh.map(log => {
         const reason = String(log.reason || log.liveness_error || '').trim();
@@ -6196,25 +6221,62 @@ function renderScanReloginProgress(state) {
           ${reasonHtml}
         </div>`;
       }).join(''));
-      scanReloginRenderedLogs = logList.length;
+      progressRenderedLogs[key] = logList.length;
       logs.scrollTop = logs.scrollHeight;
     }
   }
 }
-function bindScanReloginModal() {
-  const modal = $('#scanReloginModal');
+const scanReloginUi = {
+  summary: '#scanReloginSummary',
+  current: '#scanReloginCurrent',
+  logs: '#scanReloginLogs',
+  hint: '#scanReloginHint',
+  stats: [
+    {label: '扫', value: 'scanned'},
+    {label: '失效', value: (s) => s.dead_total || s.scanned || 0, cls: 'is-dead'},
+    {label: '测活仍活', value: 'live', cls: 'is-live'},
+    {label: '停用跳过', value: 'deactivated_mailbox', cls: 'is-skip'},
+    {label: '重上', value: 'started', cls: 'is-info'},
+    {label: '成功', value: 'ok_count', cls: 'is-ok'},
+    {label: '失败', value: 'failed_count', cls: 'is-fail'},
+  ],
+};
+function renderScanReloginProgress(state) {
+  renderProgressPanel(state, scanReloginUi);
+}
+const reauthProgressUi = {
+  summary: '#reauthProgressSummary',
+  current: '#reauthProgressCurrent',
+  logs: '#reauthProgressLogs',
+  hint: '#reauthProgressHint',
+  stats: [
+    {label: '成功', value: 'ok_count', cls: 'is-ok'},
+    {label: '失败', value: 'failed_count', cls: 'is-fail'},
+  ],
+};
+function renderReauthProgress(state) {
+  renderProgressPanel(state, reauthProgressUi);
+}
+function _bindProgressModal(ui) {
+  const modal = $(ui.modal);
   if (!modal || modal.dataset.bound) return;
   modal.dataset.bound = '1';
-  const closeBtn = $('#btnCloseScanRelogin');
-  const cancelBtn = $('#btnCancelScanRelogin');
-  if (closeBtn) closeBtn.addEventListener('click', closeScanReloginPanel);
-  if (cancelBtn) cancelBtn.addEventListener('click', closeScanReloginPanel);
+  const closeBtn = $(ui.closeBtn);
+  const cancelBtn = $(ui.cancelBtn);
+  if (closeBtn) closeBtn.addEventListener('click', ui.close);
+  if (cancelBtn) cancelBtn.addEventListener('click', ui.close);
   modal.addEventListener('click', (e) => {
-    if (e.target === modal) closeScanReloginPanel();
+    if (e.target === modal) ui.close();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeScanReloginPanel();
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) ui.close();
   });
+}
+function bindScanReloginModal() {
+  _bindProgressModal({ modal: '#scanReloginModal', closeBtn: '#btnCloseScanRelogin', cancelBtn: '#btnCancelScanRelogin', close: closeScanReloginPanel });
+}
+function bindReauthProgressModal() {
+  _bindProgressModal({ modal: '#reauthProgressModal', closeBtn: '#btnCloseReauthProgress', cancelBtn: '#btnCancelReauthProgress', close: closeReauthProgressPanel });
 }
 async function scanReloginCpa() {
   const btn = document.getElementById('btnScanReloginCpaV2');

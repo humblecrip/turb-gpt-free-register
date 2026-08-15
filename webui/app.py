@@ -27,12 +27,15 @@ from webui import config_editor
 logger = logging.getLogger(__name__)
 
 # CPA re-auth 最近批次结果（内存态，供前端轮询 /api/cpa/reauth/status）
+_CPA_REAUTH_LOG_LIMIT = 200
 _CPA_REAUTH_STATE: dict = {
     "batch_id": "",
     "running": False,
     "ok_count": 0,
     "failed_count": 0,
     "results": [],
+    "logs": [],
+    "current": "",
 }
 _CPA_REAUTH_LOCK = threading.RLock()
 
@@ -109,6 +112,39 @@ def _on_scan_relogin_entry(batch_id: str, entry: dict) -> None:
         })
         if len(logs) > _CPA_SCAN_RELOGIN_LOG_LIMIT:
             del logs[:-_CPA_SCAN_RELOGIN_LOG_LIMIT]
+
+
+def _on_reauth_entry(batch_id: str, entry: dict) -> None:
+    """「重上失效号」每号完成回调：锁内更新实时计数 + 日志 + current。
+
+    与「一键扫+重上」共用日志结构 {ts, email, status, reason}，日志上限
+    _CPA_REAUTH_LOG_LIMIT；batch_id 不匹配的旧批次线程直接忽略，不污染新批次。
+    """
+    if not isinstance(entry, dict):
+        return
+    email = str(entry.get("email") or "").strip()
+    with _CPA_REAUTH_LOCK:
+        if _CPA_REAUTH_STATE.get("batch_id") != batch_id:
+            return
+        if entry.get("ok"):
+            _CPA_REAUTH_STATE["ok_count"] = _CPA_REAUTH_STATE.get("ok_count", 0) + 1
+            status = "success"
+        else:
+            _CPA_REAUTH_STATE["failed_count"] = _CPA_REAUTH_STATE.get("failed_count", 0) + 1
+            status = "failed"
+        reason = str(entry.get("message") or entry.get("reason") or "")
+        if email:
+            _CPA_REAUTH_STATE["current"] = email
+        logs = _CPA_REAUTH_STATE.setdefault("logs", [])
+        logs.append({
+            "ts": time.strftime("%H:%M:%S"),
+            "email": email,
+            "status": status,
+            "reason": reason[:300],
+        })
+        if len(logs) > _CPA_REAUTH_LOG_LIMIT:
+            del logs[:-_CPA_REAUTH_LOG_LIMIT]
+
 
 def _pool_source_arg(default: str = "outlook") -> str:
     src = (request.args.get("source") or "").strip()
@@ -2300,15 +2336,20 @@ def create_app(auth_code: str | None = None) -> Flask:
         batch_id = time.strftime("%Y%m%d-%H%M%S")
 
         def _run_pipeline():
-            ret = cpa_reauth.run_reauth_pipeline(
-                selected,
-                delete_first=delete_first,
-                workers=workers,
-                cpa_names=cpa_names,
-                callback=None,
-                sms_country=sms_country,
-                sms_sort=sms_sort,
-            )
+            try:
+                ret = cpa_reauth.run_reauth_pipeline(
+                    selected,
+                    delete_first=delete_first,
+                    workers=workers,
+                    cpa_names=cpa_names,
+                    callback=lambda entry: _on_reauth_entry(batch_id, entry),
+                    sms_country=sms_country,
+                    sms_sort=sms_sort,
+                )
+            except Exception as exc:
+                # 兜底：pipeline 异常不能把状态卡在 running=True（前端进度面板会永远"运行中"）
+                logger.warning("[CPA][Reauth] WebUI 重上号异常: %s", exc, exc_info=True)
+                ret = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             with _CPA_REAUTH_LOCK:
                 _CPA_REAUTH_STATE.update({
                     "batch_id": batch_id,
@@ -2316,6 +2357,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok_count": ret.get("ok_count", 0),
                     "failed_count": ret.get("failed_count", 0),
                     "results": ret.get("results", []),
+                    "error": ret.get("error", ""),
                 })
             logger.info("[CPA][Reauth] WebUI 批量重上号完成 batch=%s ok=%s", batch_id, ret.get("ok_count"))
 
@@ -2328,6 +2370,9 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "ok_count": 0,
                 "failed_count": 0,
                 "results": [],
+                "logs": [],
+                "current": "",
+                "error": "",
             })
         threading.Thread(target=_run_pipeline, name=f"cpa-reauth-webui-{batch_id}", daemon=True).start()
         return jsonify({
