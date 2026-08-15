@@ -32,8 +32,20 @@ from typing import Callable
 
 from core import codex_oauth as proto
 from core import codex_retry_service
+from core.otp_utils import looks_like_openai_email
 
 logger = logging.getLogger(__name__)
+
+# OpenAI「账号已停用」邮件特征（主题/正文命中任一即视为真废号）。
+# 只列 PRD 明确的关键词；不单独用裸 "deactivated"（普通 OTP/安全邮件正文
+# 常含该词，命中会误判真废、跳过本可重上的号）。
+DEACTIVATION_HINTS = (
+    "access deactivated",
+    "has been deactivated",
+    "account has been deactivated",
+    "已停用",
+    "账号已停用",
+)
 
 
 # ============================================================
@@ -446,4 +458,264 @@ def run_reauth_pipeline(
         "results": results,
         "ok_count": ok_count,
         "failed_count": len(results) - ok_count,
+    }
+
+
+# ============================================================
+# 邮箱 deactivated 邮件判定（区分「真废」vs「token 过期」）
+# ============================================================
+
+def _looks_like_deactivation_email(item: dict) -> bool:
+    """先过滤 OpenAI 邮件，再判定主题/正文是否命中停用关键词。"""
+    if not looks_like_openai_email(item):
+        return False
+    subject = str(item.get("subject") or "").lower()
+    text = str(item.get("text") or item.get("bodyPreview") or item.get("bodyText") or "").lower()
+    content = str(item.get("content") or item.get("body") or item.get("html") or "").lower()
+    return any(h in subject or h in text or h in content for h in DEACTIVATION_HINTS)
+
+
+def _list_recent_emails(email: str, max_emails: int = 20) -> list[dict]:
+    """按邮箱源拉最近邮件列表（归一化为 otp_utils 兼容字段，供停用判定）。
+
+    generic_api 走自定义 code_url 无收件箱列表，返回空（视为无停用邮件）。
+    """
+    from core.email_provider import resolve_email_source
+
+    source = resolve_email_source(email)
+    if source == "gptmail":
+        from core.gptmail_client import list_recent_emails
+        return list_recent_emails(email, limit=max_emails)
+    if source == "cloudflare":
+        from core.cf_temp_mail_client import list_recent_emails
+        return list_recent_emails(email, limit=max_emails)
+    if source == "cloudflare_domain":
+        from core.qqmail_client import list_recent_emails
+        return list_recent_emails(email, limit=max_emails)
+    if source == "generic_api":
+        return []
+    if source == "mailnest":
+        from core.mailnest_client import list_recent_emails
+        return list_recent_emails(email, limit=max_emails)
+    if source == "cloudmail":
+        from core.cloudmail_client import list_recent_emails
+        return list_recent_emails(email, limit=max_emails)
+    if source == "icloud_hme":
+        from core.icloud_hme_client import list_recent_emails
+        return list_recent_emails(email, limit=max_emails)
+    from core.outlook_client import fetch_recent_messages
+    return fetch_recent_messages(email, limit=max_emails)
+
+
+def check_mailbox_has_deactivation(email: str, max_emails: int = 20) -> dict:
+    """查该邮箱最近 max_emails 封是否有 OpenAI 停用邮件。
+
+    返回 {deactivated: bool, matched_subject: str|None, source: str}；
+    查询失败返回 {deactivated: False, error: ..., source: ...}，不抛异常。
+    """
+    email = (email or "").strip()
+    if not email:
+        return {"deactivated": False, "matched_subject": None, "source": "", "error": "email 为空"}
+    try:
+        max_emails = max(1, min(50, int(max_emails)))
+    except (TypeError, ValueError):
+        max_emails = 20
+    try:
+        from core.email_provider import resolve_email_source
+        source = resolve_email_source(email)
+    except Exception as exc:
+        return {"deactivated": False, "matched_subject": None, "source": "",
+                "error": f"解析邮箱来源失败: {type(exc).__name__}: {str(exc)[:200]}"}
+    try:
+        items = _list_recent_emails(email, max_emails=max_emails)
+    except Exception as exc:
+        logger.warning("[CPA][Deactivated] 拉取 %s 邮件列表失败: %s", email, exc)
+        return {"deactivated": False, "matched_subject": None, "source": source,
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if _looks_like_deactivation_email(item):
+            logger.info("[CPA][Deactivated] %s 邮箱发现停用邮件 subject=%r", email, item.get("subject"))
+            return {"deactivated": True, "matched_subject": str(item.get("subject") or "")[:200], "source": source}
+    return {"deactivated": False, "matched_subject": None, "source": source}
+
+
+# ============================================================
+# 一键编排：扫失效号 → 测活 → 邮箱 deactivated 判定 → 批量重上
+# ============================================================
+
+def cpa_scan_relogin_pipeline(
+    scan_failed_threshold: int = 20,
+    probe_workers: int = 4,
+    reauth_workers: int = 1,
+    sms_country: str | None = None,
+    sms_sort: str | None = None,
+    skip_deactivated_mailbox: bool = True,
+    max_total: int = 50,
+    callback: Callable[[dict], None] | None = None,
+) -> dict:
+    """一键：扫 CPA 失效号 → 逐号测活 → 邮箱 deactivated 判定 → 批量重上号。
+
+    流程：
+      1. scan_cpa_dead_accounts → 失效号列表
+      2. 对每个失效号：
+         a. is_email_reauthable 过滤（不可重上跳过）
+         b. check_account_liveness(mode='auto') 测活：live → 跳过（扫出但实际活）
+         c. deactivated/failed → 查邮箱停用邮件：有 → 标记「账号已废」跳过重上；
+            无 → 进入重上队列
+      3. run_reauth_pipeline(重上队列, delete_first=True, ...) 批量重上
+
+    返回 {ok, scanned, dead_total, reauthable, live, deactivated_mailbox,
+          to_reauth, started, skipped, results, reauth}
+    单号异常不中断整批（try/except 逐号包裹）。
+    """
+    results: list[dict] = []
+    skipped: list[tuple[str, str]] = []
+    scanned = dead_total = reauthable = live = deactivated_mailbox = 0
+    to_reauth: list[str] = []
+
+    try:
+        dead = scan_cpa_dead_accounts(
+            failed_threshold=scan_failed_threshold,
+            probe_workers=probe_workers,
+        )
+    except Exception as exc:
+        logger.warning("[CPA][ScanRelogin] 扫描失效号失败: %s", exc)
+        return {
+            "ok": False, "error": f"扫描失败: {type(exc).__name__}: {str(exc)[:300]}",
+            "scanned": 0, "dead_total": 0, "reauthable": 0, "live": 0,
+            "deactivated_mailbox": 0, "to_reauth": [], "started": [],
+            "skipped": [], "results": [], "reauth": {},
+        }
+
+    dead_total = len(dead)
+    cpa_names: dict[str, str] = {}
+    for item in dead:
+        email = str(item.get("email") or "").strip().lower()
+        name = str(item.get("name") or "").strip()
+        if email and name:
+            cpa_names.setdefault(email, name)
+
+    for item in dead:
+        email = str(item.get("email") or "").strip()
+        if not email:
+            continue
+        if max_total > 0 and len(to_reauth) >= max_total:
+            entry = {"email": email, "status": "skipped", "reason": f"超过 max_total={max_total} 上限"}
+            skipped.append((email, entry["reason"]))
+            results.append(entry)
+            continue
+        scanned += 1
+        entry: dict = {"email": email, "status": "skipped", "reason": ""}
+        try:
+            reauthable_flag = item.get("reauthable")
+            if reauthable_flag is None:
+                reauthable_flag = is_email_reauthable(email)
+            if not reauthable_flag:
+                entry["reason"] = "本地邮箱池无法解析取码，跳过"
+                skipped.append((email, entry["reason"]))
+                results.append(entry)
+                if callback:
+                    try:
+                        callback(entry)
+                    except Exception:
+                        pass
+                continue
+            reauthable += 1
+
+            from core.account_liveness import check_account_liveness
+            try:
+                liveness = check_account_liveness(email, mode="auto")
+            except Exception as exc:
+                liveness = {"ok": False, "status": "failed",
+                            "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+            lstatus = str(liveness.get("status") or "failed")
+            entry["liveness_status"] = lstatus
+            if liveness.get("error"):
+                entry["liveness_error"] = str(liveness.get("error"))[:300]
+
+            if lstatus == "live":
+                live += 1
+                entry["reason"] = "测活判定仍可用，跳过重上"
+                skipped.append((email, entry["reason"]))
+                results.append(entry)
+                if callback:
+                    try:
+                        callback(entry)
+                    except Exception:
+                        pass
+                continue
+
+            if skip_deactivated_mailbox:
+                try:
+                    mailbox = check_mailbox_has_deactivation(email)
+                except Exception as exc:
+                    mailbox = {"deactivated": False, "source": "",
+                               "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+                entry["mailbox"] = mailbox
+                if mailbox.get("deactivated"):
+                    deactivated_mailbox += 1
+                    entry["status"] = "deactivated_mailbox"
+                    entry["reason"] = (
+                        f"邮箱存在 OpenAI 停用邮件，判定账号已废，跳过重上"
+                        f"（subject={mailbox.get('matched_subject')!r}）"
+                    )
+                    skipped.append((email, entry["reason"]))
+                    results.append(entry)
+                    if callback:
+                        try:
+                            callback(entry)
+                        except Exception:
+                            pass
+                    continue
+
+            entry["status"] = "to_reauth"
+            entry["reason"] = "token 失效且无停用邮件，进入重上队列"
+            to_reauth.append(email)
+            results.append(entry)
+            if callback:
+                try:
+                    callback(entry)
+                except Exception:
+                    pass
+        except Exception as exc:
+            entry["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            skipped.append((email, entry["reason"]))
+            results.append(entry)
+            if callback:
+                try:
+                    callback(entry)
+                except Exception:
+                    pass
+
+    reauth_ret: dict = {
+        "ok": True, "started": [], "skipped": [], "batch_id": "",
+        "results": [], "ok_count": 0, "failed_count": 0,
+    }
+    if to_reauth:
+        reauth_ret = run_reauth_pipeline(
+            to_reauth,
+            delete_first=True,
+            workers=reauth_workers,
+            max_total=max_total,
+            cpa_names=cpa_names,
+            callback=callback,
+            sms_country=sms_country,
+            sms_sort=sms_sort,
+        )
+
+    started = reauth_ret.get("started") or []
+    return {
+        "ok": bool(reauth_ret.get("ok")) if to_reauth else True,
+        "scanned": scanned,
+        "dead_total": dead_total,
+        "reauthable": reauthable,
+        "live": live,
+        "deactivated_mailbox": deactivated_mailbox,
+        "to_reauth": to_reauth,
+        "started": started,
+        "skipped": skipped,
+        "results": results,
+        "reauth": reauth_ret,
     }

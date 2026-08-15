@@ -251,6 +251,29 @@ def _otp_item(item: dict) -> dict:
     }
 
 
+def list_recent_emails(email: str, limit: int = 20) -> list[dict]:
+    """拉取收件箱最近 limit 封邮件（归一化为 otp_utils 兼容字段）。"""
+    target = str(email or "").strip()
+    if not target:
+        return []
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    data = _get("/api/emails", params={"email": target})
+    emails = data.get("emails")
+    if not isinstance(emails, list):
+        raise GPTMailError("GPTMail 收件箱响应缺少 emails 数组")
+    out = []
+    for summary in sorted(emails, key=lambda item: _timestamp(item) or float("-inf"), reverse=True):
+        if not isinstance(summary, dict):
+            continue
+        out.append(_otp_item(summary))
+        if len(out) >= limit:
+            break
+    return out
+
+
 def fetch_latest_otp(
     email: str,
     after_ts: float | None = None,

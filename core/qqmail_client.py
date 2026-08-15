@@ -239,6 +239,29 @@ def release_domain_email(email: str, status: str = "available", note: str | None
     _release(email, status=status, note=note)
 
 
+def list_recent_emails(email: str, limit: int = 20) -> list[dict]:
+    """拉取 QQ 邮箱收件箱最近 limit 封邮件（归一化为 otp_utils 兼容字段）。"""
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    mail = None
+    try:
+        mail = _connect_imap()
+        messages = _search_messages(mail)
+    except QQMailClientError as exc:
+        logger.warning(f"[QQMail] IMAP 连接失败: {exc}")
+        return []
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+    messages.sort(key=lambda m: m.get("date") or "", reverse=True)
+    return messages[:limit]
+
+
 def fetch_latest_otp(
     email: str,
     after_ts: float | None = None,

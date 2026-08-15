@@ -560,6 +560,30 @@ def get_message_detail(jwt: str, message_id: str) -> dict:
     return {}
 
 
+def list_recent_emails(email: str, limit: int = 20) -> list[dict]:
+    """拉取收件箱最近 limit 封邮件（归一化为 otp_utils 兼容字段）。"""
+    target = str(email or "").strip()
+    if not target:
+        return []
+    account = get_account_context(target)
+    if account is None or not account.jwt:
+        return []
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        messages = list_messages(account.jwt, limit=limit)
+    except CFTempMailError:
+        return []
+    out = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        out.append(_otp_item(item))
+    return out
+
+
 def fetch_latest_otp(
     email: str,
     after_ts: float | None = None,

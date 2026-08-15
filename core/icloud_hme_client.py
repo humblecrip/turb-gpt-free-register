@@ -251,6 +251,53 @@ def fetch_latest_otp(
     raise ICloudHmeError(f"等待验证码超时（>{deadline - time.time() + (max_wait or _email_cfg.OTP_MAX_WAIT)}s）: {email} {last_error}")
 
 
+def list_recent_emails(email: str, limit: int = 20) -> list[dict]:
+    """拉取该 HME 别名最近 limit 封邮件（归一化为 otp_utils 兼容字段）。
+
+    HME 别名邮件会转发到 real_email；若转发目标在 Outlook 池则委托 outlook_client，
+    否则回退读 icloud-hme 收件箱摘要（subject/preview）。
+    """
+    account = get_account_context(email)
+    if account is None:
+        return []
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        target = _forward_target_email(email, account.account_id)
+        if target:
+            try:
+                from core.outlook_client import fetch_recent_messages as outlook_recent
+                from core.outlook_client import get_account_context as outlook_ctx
+                if outlook_ctx(target) is not None:
+                    outlook_items = outlook_recent(target, limit=limit) or []
+                    if outlook_items:
+                        return outlook_items
+            except Exception as exc:
+                logger.warning(f"[ICloudHME] 转发目标取信失败，回退 icloud 收件箱: {type(exc).__name__}: {exc}")
+    except Exception:
+        pass
+    out: list[dict] = []
+    try:
+        data = _request("GET", f"/api/inbox?account_id={account.account_id}&alias={email}&limit={limit}&days=30")
+        messages = data.get("messages") or []
+        if isinstance(messages, list):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                out.append({
+                    "from": str(msg.get("from") or msg.get("sender") or ""),
+                    "subject": str(msg.get("subject") or ""),
+                    "text": str(msg.get("preview") or msg.get("body") or ""),
+                })
+                if len(out) >= limit:
+                    break
+    except Exception as exc:
+        logger.warning(f"[ICloudHME] 读取 icloud 收件箱失败: {type(exc).__name__}: {exc}")
+    return out
+
+
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
     """HME 别名可复用，无需真正回收；仅清理进程内缓存。"""
     _CONTEXT_CACHE.pop(email, None)

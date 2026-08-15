@@ -344,6 +344,38 @@ def _otp_item(mail: dict) -> dict:
     }
 
 
+def list_recent_emails(email: str, limit: int = 20) -> list[dict]:
+    """拉取收件箱最近 limit 封邮件（归一化为 otp_utils 兼容字段）。"""
+    target = str(email or "").strip()
+    if not target:
+        return []
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    mails = _request(
+        "/api/public/emailList",
+        {
+            "toEmail": target,
+            "timeSort": "desc",
+            "type": 0,
+            "isDel": 0,
+            "num": 1,
+            "size": max(20, limit),
+        },
+    )
+    if not isinstance(mails, list):
+        raise CloudMailError("CloudMail 邮件查询响应 data 不是数组")
+    out = []
+    for mail in sorted(mails, key=lambda item: _parse_time((item or {}).get("createTime")) or float("-inf"), reverse=True):
+        if not isinstance(mail, dict):
+            continue
+        out.append(_otp_item(mail))
+        if len(out) >= limit:
+            break
+    return out
+
+
 def fetch_latest_otp(
     email: str,
     after_ts: float | None = None,

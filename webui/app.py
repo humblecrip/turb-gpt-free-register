@@ -36,6 +36,23 @@ _CPA_REAUTH_STATE: dict = {
 }
 _CPA_REAUTH_LOCK = threading.RLock()
 
+# CPA 一键扫+重上最近批次结果（内存态，供前端轮询 /api/cpa/scan-relogin/status）
+_CPA_SCAN_RELOGIN_STATE: dict = {
+    "batch_id": "",
+    "running": False,
+    "scanned": 0,
+    "dead_total": 0,
+    "reauthable": 0,
+    "live": 0,
+    "deactivated_mailbox": 0,
+    "to_reauth": 0,
+    "started": 0,
+    "ok_count": 0,
+    "failed_count": 0,
+    "results": [],
+}
+_CPA_SCAN_RELOGIN_LOCK = threading.RLock()
+
 def _pool_source_arg(default: str = "outlook") -> str:
     src = (request.args.get("source") or "").strip()
     if not src and request.method == "POST":
@@ -2269,6 +2286,107 @@ def create_app(auth_code: str | None = None) -> Flask:
         """查询最近一次重上号批次的结果。返回 {ok, running, batch_id, ok_count, failed_count, results:[...]}。"""
         with _CPA_REAUTH_LOCK:
             snapshot = dict(_CPA_REAUTH_STATE)
+        return jsonify({"ok": True, **snapshot})
+
+    # ----------------------------------------------------------
+    # CPA 一键扫+重上（scan → probe → mailbox deactivated → reauth）
+    # ----------------------------------------------------------
+    @app.post("/api/cpa/scan-relogin")
+    def api_cpa_scan_relogin():
+        """一键：扫 CPA 失效号 → 逐号测活 → 邮箱 deactivated 判定 → 批量重上号。
+
+        Body {scan_probe_workers?, reauth_workers?, sms_country?, sms_sort?,
+              skip_deactivated_mailbox?, max_total?}。后台线程执行，返回 batch_id；
+        进度用 GET /api/cpa/scan-relogin/status 轮询。
+        """
+        from core import cpa_reauth
+
+        data = request.get_json(silent=True) or {}
+        try:
+            sms_country, sms_sort = _sms_params_from_data(data)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        try:
+            scan_probe_workers = int(data.get("scan_probe_workers", 4) or 4)
+        except (TypeError, ValueError):
+            scan_probe_workers = 4
+        try:
+            reauth_workers = int(data.get("reauth_workers", 1) or 1)
+        except (TypeError, ValueError):
+            reauth_workers = 1
+        try:
+            max_total = int(data.get("max_total", 50) or 50)
+        except (TypeError, ValueError):
+            max_total = 50
+        max_total = max(1, min(200, max_total))
+        skip_deactivated_mailbox = bool(data.get("skip_deactivated_mailbox", True))
+
+        batch_id = time.strftime("%Y%m%d-%H%M%S")
+
+        with _CPA_SCAN_RELOGIN_LOCK:
+            if _CPA_SCAN_RELOGIN_STATE.get("running"):
+                return jsonify({"ok": False, "error": "已有「一键扫+重上」批次在运行，请稍候"}), 409
+            _CPA_SCAN_RELOGIN_STATE.update({
+                "batch_id": batch_id,
+                "running": True,
+                "scanned": 0,
+                "dead_total": 0,
+                "reauthable": 0,
+                "live": 0,
+                "deactivated_mailbox": 0,
+                "to_reauth": 0,
+                "started": 0,
+                "ok_count": 0,
+                "failed_count": 0,
+                "results": [],
+                "error": "",
+            })
+
+        def _run_pipeline():
+            from config import codex as _codex_cfg
+            try:
+                ret = cpa_reauth.cpa_scan_relogin_pipeline(
+                    scan_failed_threshold=int(getattr(_codex_cfg, "CPA_DEAD_FAILED_THRESHOLD", 20) or 20),
+                    probe_workers=scan_probe_workers,
+                    reauth_workers=reauth_workers,
+                    sms_country=sms_country,
+                    sms_sort=sms_sort,
+                    skip_deactivated_mailbox=skip_deactivated_mailbox,
+                    max_total=max_total,
+                )
+            except Exception as exc:
+                logger.warning("[CPA][ScanRelogin] WebUI 一键扫+重上异常: %s", exc, exc_info=True)
+                ret = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            reauth_ret = ret.get("reauth") or {}
+            with _CPA_SCAN_RELOGIN_LOCK:
+                _CPA_SCAN_RELOGIN_STATE.update({
+                    "running": False,
+                    "scanned": ret.get("scanned", 0),
+                    "dead_total": ret.get("dead_total", 0),
+                    "reauthable": ret.get("reauthable", 0),
+                    "live": ret.get("live", 0),
+                    "deactivated_mailbox": ret.get("deactivated_mailbox", 0),
+                    "to_reauth": len(ret.get("to_reauth", []) or []),
+                    "started": len(ret.get("started", []) or []),
+                    "ok_count": reauth_ret.get("ok_count", 0),
+                    "failed_count": reauth_ret.get("failed_count", 0),
+                    "results": ret.get("results", []),
+                    "error": ret.get("error", ""),
+                })
+            logger.info("[CPA][ScanRelogin] WebUI 一键扫+重上完成 batch=%s ok=%s", batch_id, reauth_ret.get("ok_count"))
+
+        threading.Thread(target=_run_pipeline, name=f"cpa-scan-relogin-{batch_id}", daemon=True).start()
+        return jsonify({
+            "ok": True,
+            "message": f"已开始「一键扫+重上」：扫描失效号 → 测活 → 查邮箱停用邮件 → 批量重上（上限 {max_total}）",
+            "batch_id": batch_id,
+        })
+
+    @app.get("/api/cpa/scan-relogin/status")
+    def api_cpa_scan_relogin_status():
+        """查询最近一次「一键扫+重上」批次的结果。返回 {ok, running, batch_id, scanned, dead_total, ..., results:[...]}。"""
+        with _CPA_SCAN_RELOGIN_LOCK:
+            snapshot = dict(_CPA_SCAN_RELOGIN_STATE)
         return jsonify({"ok": True, **snapshot})
 
     @app.get("/api/cpa/pool-align")

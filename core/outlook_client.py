@@ -1185,3 +1185,38 @@ def _is_after(item: dict, after_ts: float) -> bool:
         # 时间字段缺失/解析不出 → 放过（不要因解析失败就丢邮件）
         return True
     return ts >= after_ts - _OTP_CLOCK_SKEW_TOLERANCE
+
+
+def fetch_recent_messages(email: str, limit: int = 20) -> list[dict]:
+    """拉取收件箱最近 limit 封邮件（Graph 优先、IMAP 兜底，合并去重）。
+
+    与 fetch_latest_otp 的拉取逻辑同源，但只拉一轮、不轮询等待，
+    供「邮箱是否有停用邮件」等只读场景使用。失败返回 []，不抛异常。
+    """
+    account = get_account_context(email)
+    if account is None:
+        return []
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    session = _http_session()
+    try:
+        merged: dict[str, dict] = {}
+        for protocol in ("graph", "imap"):
+            try:
+                emails = _fetch_via(session, protocol, account)
+            except Exception:
+                emails = []
+            for item in emails:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("id") or "").strip()
+                if not key:
+                    key = f"{item.get('subject')}|{item.get('receivedDateTime') or item.get('date')}"
+                if not key or key in merged:
+                    continue
+                merged[key] = item
+        return list(merged.values())[:limit]
+    finally:
+        session.close()

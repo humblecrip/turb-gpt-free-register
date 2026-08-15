@@ -2727,6 +2727,7 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnCodexDeleteBulkV2" disabled title="删除选中的本地 Codex JSON 凭证文件">删除选中</button>
         <button type="button" class="jobs-tb-btn" id="btnScanCpaDeadV2" title="扫描 CPA 侧失效（disabled/error/unavailable/高失败）的 codex 凭证，仅展示不删除">扫描失效</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnReauthCpaDeadV2" title="对扫描出的失效号重新上号：删 CPA 失效凭证 → 复用原邮箱补跑 OAuth → 新凭证自动回传 CPA（每个号消耗 1 OTP + 1 接码短信）">重上失效号</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnScanReloginCpaV2" title="一键：扫描 CPA 失效号 → 逐号测活 → 查邮箱最近 20 封是否有 OpenAI 停用邮件（有则判定账号已废，跳过重上，不浪费接码）→ 无停用邮件的批量重上号">一键扫+重上</button>
       </div>
       <div id="cpaDeadPanelV2" class="cpa-dead-panel">
         <div class="cpa-dead-header">
@@ -5964,6 +5965,47 @@ function _pollCpaReauthStatus() {
   }, 5000);
 }
 
+// ---------- CPA 一键扫+重上（scan → probe → mailbox deactivated → reauth） ----------
+async function scanReloginCpa() {
+  const btn = document.getElementById('btnScanReloginCpaV2');
+  const msg = '一键扫+重上：\n\n' +
+    ' 1. 扫描 CPA 失效号\n' +
+    ' 2. 逐号测活（自动模式：先轻量 token 探测，不确定再完整重登录）\n' +
+    ' 3. 查邮箱最近 20 封是否有 OpenAI 停用邮件（有 → 判定账号已废，跳过重上，不浪费接码）\n' +
+    ' 4. 无停用邮件的失效号批量重上\n\n' +
+    '每个重上号消耗 1 封 OTP + 1 个接码短信（约 $0.13）。\n\n在后台执行，期间请勿重复触发。';
+  openSmsConfirm({
+    title: '一键扫+重上',
+    message: msg,
+    onConfirm: async (sms) => {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await api('/api/cpa/scan-relogin', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ scan_probe_workers: 4, reauth_workers: 1, sms_country: sms.sms_country, sms_sort: sms.sms_sort, skip_deactivated_mailbox: true, max_total: 50 }) });
+        showToast(r.message || '已开始一键扫+重上');
+        _pollCpaScanReloginStatus();
+      } catch(err) {
+        showToast('触发一键扫+重上失败: ' + err.message);
+        if (btn) btn.disabled = false;
+      }
+    },
+  });
+}
+function _pollCpaScanReloginStatus() {
+  const poll = setInterval(async () => {
+    try {
+      const r = await api('/api/cpa/scan-relogin/status');
+      if (!r.running) {
+        clearInterval(poll);
+        const btn = document.getElementById('btnScanReloginCpaV2');
+        if (btn) btn.disabled = false;
+        showToast(`一键扫+重上完成：扫 ${r.scanned||0} 失效 ${r.dead_total||0}，测活仍活 ${r.live||0}，停用邮件跳过 ${r.deactivated_mailbox||0}，重上 ${r.started||0}（成功 ${r.ok_count||0} 失败 ${r.failed_count||0}）`);
+        loadCodex();
+        scanCpaDead();
+      }
+    } catch(e) { /* 忽略轮询瞬时错误 */ }
+  }, 5000);
+}
+
 // ---------- 账号池 ↔ CPA 对齐 ----------
 let CPA_ALIGN = null;
 function openCpaAlign() {
@@ -6449,6 +6491,7 @@ async function codexDeleteBulk() {
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
   bind('btnScanCpaDeadV2', scanCpaDead);
   bind('btnReauthCpaDeadV2', reauthCpaDead);
+  bind('btnScanReloginCpaV2', scanReloginCpa);
   document.addEventListener('click', (e) => {
     if (e.target.closest('.codex-table-v2 .acc-v2-more')) return;
     closeCodexV2MoreMenus();
