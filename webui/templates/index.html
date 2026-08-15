@@ -1872,6 +1872,136 @@
     .cpa-align-foot .jobs-tb-btn--primary:hover:not(:disabled) {
       background: #5a94ff; border-color: #5a94ff; color: #fff;
     }
+    #scanReloginModal:not(.hidden) {
+      position: fixed; inset: 0; z-index: 1200;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px; box-sizing: border-box;
+      background: rgba(15, 23, 42, .45);
+    }
+    .scan-relogin-dialog {
+      width: min(860px, 100%); max-height: min(880px, calc(100vh - 48px));
+      display: flex; flex-direction: column;
+      background: #fff; border-radius: 12px; border: 1px solid #ebeef5;
+      box-shadow: 0 24px 70px rgba(15,23,42,.28); overflow: hidden;
+    }
+    .scan-relogin-head {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 20px 20px 14px; border-bottom: 1px solid #ebeef5;
+    }
+    .scan-relogin-head-main { min-width: 0; flex: 1; }
+    .scan-relogin-head h3 {
+      margin: 0; font-size: 18px; font-weight: 700; color: #303133; line-height: 1.3;
+    }
+    .scan-relogin-head p {
+      margin: 8px 0 0; font-size: 12px; line-height: 1.55; color: #909399;
+    }
+    .scan-relogin-close {
+      width: 32px; height: 32px; flex-shrink: 0; margin: -4px -4px 0 0;
+      border: none; border-radius: 6px; background: transparent;
+      color: #909399; font-size: 20px; line-height: 1; cursor: pointer;
+    }
+    .scan-relogin-close:hover { background: #f5f7fa; color: #606266; }
+    .scan-relogin-body {
+      padding: 18px 20px; overflow: auto; display: grid; gap: 12px;
+    }
+    .scan-relogin-summary {
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .scan-relogin-stat {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 5px 10px; border-radius: 999px;
+      background: #f5f7fa; border: 1px solid #ebeef5;
+      font-size: 12px; color: #606266; white-space: nowrap;
+    }
+    .scan-relogin-stat b { font-weight: 700; color: #303133; }
+    .scan-relogin-stat.is-live { background: #E7FCF8; border-color: #9ee0d6; color: #2bb8a6; }
+    .scan-relogin-stat.is-live b { color: #2bb8a6; }
+    .scan-relogin-stat.is-dead { background: #fef0f0; border-color: #fbc4c4; color: #f56c6c; }
+    .scan-relogin-stat.is-dead b { color: #f56c6c; }
+    .scan-relogin-stat.is-skip { background: #fffbe6; border-color: #ffe58f; color: #d48806; }
+    .scan-relogin-stat.is-skip b { color: #d48806; }
+    .scan-relogin-stat.is-info { background: #ecf5ff; border-color: #c6e2ff; color: #409eff; }
+    .scan-relogin-stat.is-info b { color: #409eff; }
+    .scan-relogin-stat.is-ok { background: #E7FCF8; border-color: #9ee0d6; color: #2bb8a6; }
+    .scan-relogin-stat.is-ok b { color: #2bb8a6; }
+    .scan-relogin-stat.is-fail { background: #fef0f0; border-color: #fbc4c4; color: #f56c6c; }
+    .scan-relogin-stat.is-fail b { color: #f56c6c; }
+    .scan-relogin-current {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; border-radius: 8px;
+      background: #ecf5ff; border: 1px solid #c6e2ff;
+      font-size: 13px; color: #409eff;
+    }
+    .scan-relogin-current b { color: #303133; font-weight: 600; }
+    .scan-relogin-spinner {
+      width: 12px; height: 12px; flex-shrink: 0; border-radius: 50%;
+      border: 2px solid #c6e2ff; border-top-color: #377DFF;
+      animation: scanReloginSpin .8s linear infinite;
+    }
+    @keyframes scanReloginSpin { to { transform: rotate(360deg); } }
+    .scan-relogin-loglist {
+      display: grid; gap: 4px;
+      max-height: min(440px, 48vh); overflow: auto;
+      border: 1px solid #ebeef5; border-radius: 8px; padding: 8px;
+      background: #fafbfc;
+    }
+    .scan-relogin-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 5px 8px; border-radius: 6px;
+      background: #fff; border: 1px solid #f0f2f5;
+      font-size: 12px; line-height: 1.4;
+    }
+    .scan-relogin-ts {
+      flex-shrink: 0; color: #c0c4cc; font-variant-numeric: tabular-nums;
+    }
+    .scan-relogin-email {
+      flex-shrink: 0; min-width: 0; max-width: 38%;
+      font-weight: 600; color: #303133;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .scan-relogin-reason {
+      flex: 1; min-width: 0; color: #909399;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .scan-relogin-body .pill.scan-relogin-pill {
+      display: inline-flex; align-items: center; justify-content: center;
+      flex-shrink: 0; height: 22px; padding: 0 8px; border-radius: 4px;
+      border: 1px solid transparent; box-sizing: border-box;
+      font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap;
+    }
+    .scan-relogin-body .pill.scan-relogin-pill.is-ok {
+      color: #2bb8a6; background: #E7FCF8; border-color: #9ee0d6;
+    }
+    .scan-relogin-body .pill.scan-relogin-pill.is-skip {
+      color: #d48806; background: #fffbe6; border-color: #ffe58f;
+    }
+    .scan-relogin-body .pill.scan-relogin-pill.is-fail {
+      color: #f56c6c; background: #fef0f0; border-color: #fbc4c4;
+    }
+    .scan-relogin-body .pill.scan-relogin-pill.is-info {
+      color: #409eff; background: #ecf5ff; border-color: #c6e2ff;
+    }
+    .scan-relogin-foot {
+      display: flex; justify-content: space-between; align-items: center; gap: 10px;
+      padding: 14px 20px 18px; border-top: 1px solid #ebeef5; background: #fafbfc;
+    }
+    .scan-relogin-foot-hint { font-size: 12px; color: #909399; }
+    .scan-relogin-foot .jobs-tb-btn {
+      min-height: 40px; padding: 8px 18px; font-size: 14px;
+      border: 1px solid #dcdfe6; border-radius: 6px;
+      background: #fff; color: #606266; cursor: pointer;
+      display: inline-flex; align-items: center; white-space: nowrap;
+      font: inherit; line-height: 1; box-sizing: border-box;
+    }
+    .scan-relogin-foot .jobs-tb-btn:hover:not(:disabled) {
+      color: #409eff; border-color: #c6e2ff; background: #ecf5ff;
+    }
+    .scan-relogin-foot .jobs-tb-btn--primary {
+      color: #fff; background: #377DFF; border-color: #377DFF;
+    }
+    .scan-relogin-foot .jobs-tb-btn--primary:hover:not(:disabled) {
+      background: #5a94ff; border-color: #5a94ff; color: #fff;
+    }
     .cpa-align-foot .jobs-tb-btn:disabled {
       opacity: .7; cursor: not-allowed;
     }
@@ -2998,6 +3128,26 @@
     </div>
   </div>
 </div>
+<div id="scanReloginModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="scanReloginTitle">
+  <div class="scan-relogin-dialog" role="document">
+    <div class="scan-relogin-head">
+      <div class="scan-relogin-head-main">
+        <h3 id="scanReloginTitle">一键扫+重上 · 实时进度</h3>
+        <p>扫描 CPA 失效号 → 逐号测活 → 查邮箱停用邮件 → 批量重上号；运行中实时更新，完成后保留本面板供查看。</p>
+      </div>
+      <button type="button" class="scan-relogin-close" id="btnCloseScanRelogin" aria-label="关闭">×</button>
+    </div>
+    <div class="scan-relogin-body">
+      <div class="scan-relogin-summary" id="scanReloginSummary"></div>
+      <div class="scan-relogin-current hidden" id="scanReloginCurrent"></div>
+      <div class="scan-relogin-loglist" id="scanReloginLogs"></div>
+    </div>
+    <div class="scan-relogin-foot">
+      <span class="scan-relogin-foot-hint" id="scanReloginHint">完成后可滚动查看完整报告，点关闭才关</span>
+      <button type="button" class="jobs-tb-btn" id="btnCancelScanRelogin">关闭</button>
+    </div>
+  </div>
+</div>
 <div id="smsConfirmModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="smsConfirmTitle">
   <div class="sms-confirm-dialog" role="document">
     <div class="sms-confirm-head">
@@ -3502,6 +3652,7 @@ function updateModalScrollLock() {
     || !$('#qrPanel').classList.contains('hidden')
     || !$('#outlookImportModal').classList.contains('hidden')
     || !$('#cpaAlignModal').classList.contains('hidden')
+    || !$('#scanReloginModal').classList.contains('hidden')
     || !$('#smsConfirmModal').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
@@ -5361,6 +5512,7 @@ async function copySelectedAccountTokens() {
   bind('btnBatchDeleteByTagsV2', batchDeleteByTags);
   initBatchTagSelectV2();
   bindCpaAlignModal();
+  bindScanReloginModal();
 })();
 
 // ---------- 账号工具栏「更多」下拉 ----------
@@ -5966,6 +6118,104 @@ function _pollCpaReauthStatus() {
 }
 
 // ---------- CPA 一键扫+重上（scan → probe → mailbox deactivated → reauth） ----------
+// 实时进度气泡面板状态
+let scanReloginRenderedLogs = 0;
+let scanReloginPollTimer = null;
+function openScanReloginPanel() {
+  const modal = $('#scanReloginModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  updateModalScrollLock();
+}
+function closeScanReloginPanel() {
+  const modal = $('#scanReloginModal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  updateModalScrollLock();
+}
+function _scanReloginStatPill(label, value, cls) {
+  return `<span class="scan-relogin-stat${cls ? ' ' + cls : ''}">${label} <b>${value}</b></span>`;
+}
+function _scanReloginLogPill(log) {
+  const st = log.status || '';
+  const ls = log.liveness_status || '';
+  if (st === 'success') return `<span class="pill scan-relogin-pill is-ok">重上成功</span>`;
+  if (st === 'failed') return `<span class="pill scan-relogin-pill is-fail">重上失败</span>`;
+  if (st === 'to_reauth') return `<span class="pill scan-relogin-pill is-info">待重上</span>`;
+  if (st === 'deactivated_mailbox') return `<span class="pill scan-relogin-pill is-skip">停用跳过</span>`;
+  if (ls === 'live') return `<span class="pill scan-relogin-pill is-ok">仍活</span>`;
+  return `<span class="pill scan-relogin-pill is-skip">跳过</span>`;
+}
+function renderScanReloginProgress(state) {
+  if (!state) return;
+  const summary = $('#scanReloginSummary');
+  const current = $('#scanReloginCurrent');
+  const logs = $('#scanReloginLogs');
+  const hint = $('#scanReloginHint');
+  const running = !!state.running;
+  const dead = state.dead_total || state.scanned || 0;
+  if (summary) {
+    summary.innerHTML = [
+      _scanReloginStatPill('扫', state.scanned || 0),
+      _scanReloginStatPill('失效', dead, 'is-dead'),
+      _scanReloginStatPill('测活仍活', state.live || 0, 'is-live'),
+      _scanReloginStatPill('停用跳过', state.deactivated_mailbox || 0, 'is-skip'),
+      _scanReloginStatPill('重上', state.started || 0, 'is-info'),
+      _scanReloginStatPill('成功', state.ok_count || 0, 'is-ok'),
+      _scanReloginStatPill('失败', state.failed_count || 0, 'is-fail'),
+    ].join('');
+  }
+  if (current) {
+    if (running && state.current) {
+      current.classList.remove('hidden');
+      current.innerHTML = `<span class="scan-relogin-spinner"></span>正在处理 <b>${esc(state.current)}</b>…`;
+    } else {
+      current.classList.add('hidden');
+    }
+  }
+  if (hint) {
+    if (running) hint.textContent = '运行中…日志实时刷新，完成后保留本面板供查看';
+    else if (state.error) hint.textContent = `出错：${state.error}。可点关闭收起面板`;
+    else hint.textContent = '完成。可滚动查看完整报告，点关闭才关';
+  }
+  if (logs && Array.isArray(state.logs)) {
+    const logList = state.logs;
+    if (logList.length < scanReloginRenderedLogs) {
+      logs.innerHTML = '';
+      scanReloginRenderedLogs = 0;
+    }
+    const fresh = logList.slice(scanReloginRenderedLogs);
+    if (fresh.length) {
+      logs.insertAdjacentHTML('beforeend', fresh.map(log => {
+        const reason = String(log.reason || log.liveness_error || '').trim();
+        const reasonHtml = reason ? `<span class="scan-relogin-reason" title="${esc(reason)}">${esc(reason)}</span>` : '';
+        return `<div class="scan-relogin-row">
+          <span class="scan-relogin-ts">${esc(log.ts || '')}</span>
+          <span class="scan-relogin-email" title="${esc(log.email || '')}">${esc(log.email || '-')}</span>
+          ${_scanReloginLogPill(log)}
+          ${reasonHtml}
+        </div>`;
+      }).join(''));
+      scanReloginRenderedLogs = logList.length;
+      logs.scrollTop = logs.scrollHeight;
+    }
+  }
+}
+function bindScanReloginModal() {
+  const modal = $('#scanReloginModal');
+  if (!modal || modal.dataset.bound) return;
+  modal.dataset.bound = '1';
+  const closeBtn = $('#btnCloseScanRelogin');
+  const cancelBtn = $('#btnCancelScanRelogin');
+  if (closeBtn) closeBtn.addEventListener('click', closeScanReloginPanel);
+  if (cancelBtn) cancelBtn.addEventListener('click', closeScanReloginPanel);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeScanReloginPanel();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeScanReloginPanel();
+  });
+}
 async function scanReloginCpa() {
   const btn = document.getElementById('btnScanReloginCpaV2');
   const msg = '一键扫+重上：\n\n' +
@@ -5979,6 +6229,8 @@ async function scanReloginCpa() {
     message: msg,
     onConfirm: async (sms) => {
       if (btn) btn.disabled = true;
+      openScanReloginPanel();
+      renderScanReloginProgress({ running: true, scanned: 0, dead_total: 0, live: 0, deactivated_mailbox: 0, started: 0, ok_count: 0, failed_count: 0, logs: [], current: '' });
       try {
         const r = await api('/api/cpa/scan-relogin', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ scan_probe_workers: 4, reauth_workers: 1, sms_country: sms.sms_country, sms_sort: sms.sms_sort, skip_deactivated_mailbox: true, max_total: 50 }) });
         showToast(r.message || '已开始一键扫+重上');
@@ -5986,24 +6238,29 @@ async function scanReloginCpa() {
       } catch(err) {
         showToast('触发一键扫+重上失败: ' + err.message);
         if (btn) btn.disabled = false;
+        renderScanReloginProgress({ running: false, scanned: 0, dead_total: 0, live: 0, deactivated_mailbox: 0, started: 0, ok_count: 0, failed_count: 0, logs: [], current: '', error: err.message || '触发失败' });
       }
     },
   });
 }
 function _pollCpaScanReloginStatus() {
-  const poll = setInterval(async () => {
+  if (scanReloginPollTimer) clearInterval(scanReloginPollTimer);
+  scanReloginPollTimer = setInterval(async () => {
     try {
       const r = await api('/api/cpa/scan-relogin/status');
+      renderScanReloginProgress(r);
       if (!r.running) {
-        clearInterval(poll);
+        clearInterval(scanReloginPollTimer);
+        scanReloginPollTimer = null;
         const btn = document.getElementById('btnScanReloginCpaV2');
         if (btn) btn.disabled = false;
-        showToast(`一键扫+重上完成：扫 ${r.scanned||0} 失效 ${r.dead_total||0}，测活仍活 ${r.live||0}，停用邮件跳过 ${r.deactivated_mailbox||0}，重上 ${r.started||0}（成功 ${r.ok_count||0} 失败 ${r.failed_count||0}）`);
+        const errMsg = r.error ? `（${r.error}）` : '';
+        showToast(`一键扫+重上完成：扫 ${r.scanned||0} 失效 ${r.dead_total||0}，测活仍活 ${r.live||0}，停用邮件跳过 ${r.deactivated_mailbox||0}，重上 ${r.started||0}（成功 ${r.ok_count||0} 失败 ${r.failed_count||0}）${errMsg}`);
         loadCodex();
         scanCpaDead();
       }
     } catch(e) { /* 忽略轮询瞬时错误 */ }
-  }, 5000);
+  }, 2500);
 }
 
 // ---------- 账号池 ↔ CPA 对齐 ----------

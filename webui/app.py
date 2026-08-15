@@ -37,6 +37,7 @@ _CPA_REAUTH_STATE: dict = {
 _CPA_REAUTH_LOCK = threading.RLock()
 
 # CPA 一键扫+重上最近批次结果（内存态，供前端轮询 /api/cpa/scan-relogin/status）
+_CPA_SCAN_RELOGIN_LOG_LIMIT = 200
 _CPA_SCAN_RELOGIN_STATE: dict = {
     "batch_id": "",
     "running": False,
@@ -50,8 +51,64 @@ _CPA_SCAN_RELOGIN_STATE: dict = {
     "ok_count": 0,
     "failed_count": 0,
     "results": [],
+    "logs": [],
+    "current": "",
 }
 _CPA_SCAN_RELOGIN_LOCK = threading.RLock()
+
+
+def _on_scan_relogin_entry(batch_id: str, entry: dict) -> None:
+    """「一键扫+重上」每号完成回调：锁内更新实时计数 + 日志 + current。
+
+    scan 阶段 entry 无 ok 键（email/status/reason/liveness_status/liveness_error）；
+    reauth 阶段 entry 有 ok 键（email/ok/status/message）。
+    日志上限 _CPA_SCAN_RELOGIN_LOG_LIMIT，防止长批次膨胀。
+    """
+    if not isinstance(entry, dict):
+        return
+    email = str(entry.get("email") or "").strip()
+    with _CPA_SCAN_RELOGIN_LOCK:
+        if _CPA_SCAN_RELOGIN_STATE.get("batch_id") != batch_id:
+            return
+        if "ok" in entry:
+            _CPA_SCAN_RELOGIN_STATE["started"] = _CPA_SCAN_RELOGIN_STATE.get("started", 0) + 1
+            if entry.get("ok"):
+                _CPA_SCAN_RELOGIN_STATE["ok_count"] = _CPA_SCAN_RELOGIN_STATE.get("ok_count", 0) + 1
+                status = "success"
+            else:
+                _CPA_SCAN_RELOGIN_STATE["failed_count"] = _CPA_SCAN_RELOGIN_STATE.get("failed_count", 0) + 1
+                status = "failed"
+            reason = str(entry.get("message") or "")
+            liveness_status = ""
+            liveness_error = ""
+        else:
+            _CPA_SCAN_RELOGIN_STATE["scanned"] = _CPA_SCAN_RELOGIN_STATE.get("scanned", 0) + 1
+            status = str(entry.get("status") or "skipped")
+            liveness_status = str(entry.get("liveness_status") or "")
+            liveness_error = str(entry.get("liveness_error") or "")
+            if liveness_status == "live":
+                _CPA_SCAN_RELOGIN_STATE["live"] = _CPA_SCAN_RELOGIN_STATE.get("live", 0) + 1
+                _CPA_SCAN_RELOGIN_STATE["reauthable"] = _CPA_SCAN_RELOGIN_STATE.get("reauthable", 0) + 1
+            elif status == "deactivated_mailbox":
+                _CPA_SCAN_RELOGIN_STATE["deactivated_mailbox"] = _CPA_SCAN_RELOGIN_STATE.get("deactivated_mailbox", 0) + 1
+                _CPA_SCAN_RELOGIN_STATE["reauthable"] = _CPA_SCAN_RELOGIN_STATE.get("reauthable", 0) + 1
+            elif status == "to_reauth":
+                _CPA_SCAN_RELOGIN_STATE["to_reauth"] = _CPA_SCAN_RELOGIN_STATE.get("to_reauth", 0) + 1
+                _CPA_SCAN_RELOGIN_STATE["reauthable"] = _CPA_SCAN_RELOGIN_STATE.get("reauthable", 0) + 1
+            reason = str(entry.get("reason") or liveness_error)
+        if email:
+            _CPA_SCAN_RELOGIN_STATE["current"] = email
+        logs = _CPA_SCAN_RELOGIN_STATE.setdefault("logs", [])
+        logs.append({
+            "ts": time.strftime("%H:%M:%S"),
+            "email": email,
+            "status": status,
+            "reason": reason[:300],
+            "liveness_status": liveness_status,
+            "liveness_error": liveness_error[:300],
+        })
+        if len(logs) > _CPA_SCAN_RELOGIN_LOG_LIMIT:
+            del logs[:-_CPA_SCAN_RELOGIN_LOG_LIMIT]
 
 def _pool_source_arg(default: str = "outlook") -> str:
     src = (request.args.get("source") or "").strip()
@@ -2339,6 +2396,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "ok_count": 0,
                 "failed_count": 0,
                 "results": [],
+                "logs": [],
+                "current": "",
                 "error": "",
             })
 
@@ -2353,6 +2412,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                     sms_sort=sms_sort,
                     skip_deactivated_mailbox=skip_deactivated_mailbox,
                     max_total=max_total,
+                    callback=lambda entry: _on_scan_relogin_entry(batch_id, entry),
                 )
             except Exception as exc:
                 logger.warning("[CPA][ScanRelogin] WebUI 一键扫+重上异常: %s", exc, exc_info=True)
